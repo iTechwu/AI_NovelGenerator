@@ -1,282 +1,621 @@
-# 📖 Automatic Novel Generation Tool
+# DofeAI Monorepo Scaffold
 
-[中文文档](./README_zh-CN.md) | English | [日本語](./README_ja.md) | [Français](./README_fr-FR.md) | [Sawcuengh](./README_sawcuengh.md)
-
-> ~~Currently I don't have much energy to maintain this project. The project brings no revenue, and with graduation approaching I have many other priorities. If time permits in the future I may consider a refactor using newer technologies. — 2025/09/24~~
+> **DoFe.AI — Do For Employee · Do For Enterprise · Do For Empowerment**
 >
->- ~~**(2026/03/09):** This project will be refactored soon, featuring modern implementations and fresh creative concepts.~~
->
-> **Update (2026/03/25):** The refactored version has completed initial development (only the main framework is done, features are not yet available) and will be uploaded to the dev branch within a week. Subsequent development will also be synchronized on the branch.
+> 分布式 AI 执行力引擎，服务与成就中国智造的全球竞争力。
 
-<div align="center">
-  
-✨ **Core Features** ✨
+DofeAI 是一个面向团队的**多智能体驱动内容创作与运营平台**。本仓库是其**生产级全栈 monorepo 脚手架模板** — 开箱即用的前端、后端、共享包和基础设施集成，5 分钟即可启动新项目。
 
-| Module                | Key Capabilities                        |
-|-----------------------|-----------------------------------------|
-| 🎨 Novel Setting Workshop | Worldbuilding / Character Design / Plot Blueprint |
-| 📖 Intelligent Chapter Generation | Multi-stage generation to ensure plot coherence |
-| 🧠 State Tracking System | Character development trajectory / Foreshadowing management |
-| 🔍 Semantic Search Engine | Vector-based long-term context consistency |
-| 📚 Knowledge Base Integration | Supports local document references |
-| ✅ Automatic Proofreading | Detects plot contradictions and logical conflicts |
-| 🖥 Visual Workbench | Full-process GUI for configuration / generation / proofreading |
+```
+npx create-dofe-ai my-app && cd my-app && pnpm install && pnpm dev
+```
 
-</div>
+## 目录
 
-> A multifunctional novel generator built on large language models. Helps you efficiently create long-form stories with consistent settings and rigorous logic.
-
----
-
-## 📑 Table of Contents
-1. [Environment Preparation](#-environment-preparation)  
-2. [Project Structure](#-project-structure)  
-3. [Configuration Guide](#⚙️-configuration-guide)  
-4. [Run Instructions](#🚀-run-instructions)  
-5. [User Guide](#📘-user-guide)  
-6. [FAQ](#❓-faq)  
+- [1. 项目介绍](#1-项目介绍)
+- [2. 设计理念](#2-设计理念)
+- [3. 快速开始](#3-快速开始)
+- [4. 脚手架使用方式](#4-脚手架使用方式)
+- [5. 架构与能力](#5-架构与能力)
+- [6. 核心数据流](#6-核心数据流)
+- [7. 配置体系](#7-配置体系)
+- [8. 可用命令](#8-可用命令)
+- [9. 发布到 npm](#9-发布到-npm)
+- [10. Docker 部署](#10-docker-部署)
+- [11. 文档索引](#11-文档索引)
 
 ---
 
-## 🛠 Environment Preparation
-Ensure the environment meets the following requirements:
-- **Python 3.9+** (recommended 3.10–3.12)
-- **pip** package manager
-- Valid API keys:
-   - Cloud services: OpenAI / DeepSeek, etc.
-   - Local services: Ollama or other OpenAI-compatible interfaces
+## 1. 项目介绍
+
+### DofeAI 做什么
+
+DofeAI 是一个多智能体驱动的内容创作与运营平台，核心能力：
+
+| 领域             | 能力                                                         |
+| ---------------- | ------------------------------------------------------------ |
+| **AI 内容创作**  | 智能写作、创意生成、多模态内容创作                           |
+| **知识库管理**   | 进化型知识库、智能提取、质量评估、版本控制、相似度检测与合并 |
+| **智能推荐**     | 基于向量检索和协同过滤的知识推荐系统                         |
+| **招聘面试**     | AI 招聘 Agent、简历解析、JD 分析、人才匹配、智能面试         |
+| **会议管理**     | 实时转写、知识提取、智能纪要生成                             |
+| **多智能体协作** | 支持多智能体协同工作                                         |
+
+### 这个脚手架是什么
+
+这是 DofeAI 平台的**完整项目模板** — clone 后即可得到一个包含所有源码、配置、文档、脚本、数据库迁移的生产级项目，而不是一个空壳。它包含：
+
+- 已搭建好的 NestJS + Next.js monorepo 架构
+- 可复用的 10 个基础设施包（`@dofe/infra-*`）
+- 完整的认证系统（JWT + OAuth2）
+- 三层配置体系（Zod 校验）
+- 类型安全的 API 契约（ts-rest）
+- Docker 部署配置
+- 交互式项目初始化脚本
+
+### 谁适合用
+
+- 需要快速搭建全栈 AI 应用的团队
+- 基于 DofeAI 平台开发新业务模块的开发者
+- 需要 NestJS + Next.js monorepo 最佳实践参考的工程师
+
+### 技术栈
+
+| 层级         | 技术                                                            |
+| ------------ | --------------------------------------------------------------- |
+| **前端**     | Next.js 16 (App Router) + React 19 + Tailwind CSS 4 + shadcn/ui |
+| **后端**     | NestJS 11 + Fastify + Prisma ORM                                |
+| **API 契约** | ts-rest + Zod 4 — 编译时类型检查 + 运行时校验                   |
+| **缓存**     | Redis (ioredis) + 命名缓存键                                    |
+| **消息队列** | RabbitMQ + BullMQ                                               |
+| **认证**     | Passport (JWT, OAuth2 — 微信/Google/Discord)                    |
+| **校验**     | Zod 4（前后端统一 Schema）                                      |
+| **构建**     | pnpm workspaces + Turborepo                                     |
+| **容器化**   | Docker Compose（多阶段构建）                                    |
 
 ---
 
-## 📥 Installation
-1. **Download the project**  
-    - Download the project ZIP from [GitHub](https://github.com) or clone the repository:
-       ```bash
-       git clone https://github.com/YILING0013/AI_NovelGenerator
-       ```
+## 2. 设计理念
 
+### scaffold + npm 共享包架构
 
-2. **Install build tools (optional)**  
-    - If some packages fail to install, visit [Visual Studio Build Tools](https://visualstudio.microsoft.com/zh-hans/visual-cpp-build-tools/) to download and install C++ build tools required by some modules.
-    - By default the installer includes MSBuild only; make sure to select **C++ Desktop Development** from the workload list.
+```
+scaffold.dofe.ai/
+├── apps/api/                 # NestJS 后端
+├── apps/web/                 # Next.js 前端
+└── packages/                 # 项目内共享包
 
-3. **Install dependencies and run**  
-    - Open a terminal and change to the project directory:
-       ```bash
-       cd AI_NovelGenerator
-       ```
-    - (Optional) Create and activate virtual environment:
-       ```bash
-       python -m venv .venv
-       # if that doesn't work, try:
-       # python3 -m venv .venv
-       ```
-       ```
-       # On Windows:
-       .venv/Scripts/activate
-       ```
-       ```
-       # On Linux/Mac:
-       source .venv/bin/activate
-       ```
-    - Install project dependencies:
-       ```bash
-       pip install -r requirements.txt
-       ```
-    - After installation run the main program:
-       ```bash
-       python main.py
-       ```
+npm packages/
+└── @dofe/infra-*             # 基础设施共享包
+```
 
-If some dependencies are still missing, manually run:
+**为什么分开**：
+
+- **scaffold** 是项目代码 — 每个项目独立一份，包含业务逻辑
+- **infra** 是基础设施 — 多个项目共享，与产品无关，通过 npm 版本消费
+- 新项目不要求同级克隆 `infra.dofe.ai`，需要修改 infra 时在 infra 仓库独立发布版本
+
+### 四层依赖方向
+
+```
+                    依赖方向 ──────────────────────►
+
+┌─────────────┐    ┌─────────────┐    ┌──────────────────┐
+│   modules   │───►│   domain    │───►│   @dofe/infra-*  │
+│ (Controller │    │  (auth,     │    │ (common, clients, │
+│  + Service) │    │  services)  │    │  prisma, redis,   │
+│             │    │             │    │  jwt, utils, ...) │
+└─────────────┘    └─────────────┘    └──────────────────┘
+       │                                     ▲
+       │  ┌──────────────────┐               │
+       └──│  DB Service 层   │───────────────┘
+          │ (generated/db)   │   直接操作 Prisma
+          └──────────────────┘
+```
+
+规则：
+
+- **infra** 禁止依赖 domain — 保持可复用性
+- **modules** 通过 DB Service 操作数据库 — 禁止直接调用 Prisma
+- **modules** 通过 Client 层调用外部服务 — 禁止直接使用 axios
+
+### 三条核心架构规则
+
+1. **数据库操作仅在 DB Service 层** — Service 使用 Prisma 类型定义构建查询条件，通过 DB Service 方法执行
+2. **Zod-first 校验** — 所有 API 请求/响应使用 Zod Schema，Controller 层禁止手动类型断言
+3. **外部服务调用在 Client 层** — 第三方 API 封装在 `@dofe/infra-clients`，使用 `@nestjs/axios`
+
+---
+
+## 3. 快速开始
+
 ```bash
-pip install <package-name>
-```
-to install them.
+# 1. 创建项目
+npx create-dofe-ai my-app
+cd my-app
 
+# 2. 安装依赖
+pnpm install
 
-## 🗂 Project Structure
+# 3. 生成 Prisma Client
+pnpm db:generate
+
+# 4. 启动开发服务
+pnpm dev
 ```
-novel-generator/
-├── main.py                      # Entry file, runs the GUI
-├── consistency_checker.py       # Consistency checks to prevent plot conflicts
-|—— chapter_directory_parser.py  # Directory parsing
-|—— embedding_adapters.py        # Embedding interface wrappers
-|—— llm_adapters.py              # LLM interface wrappers
-├── prompt_definitions.py        # AI prompt templates
-├── utils.py                     # Utility functions and file operations
-├── config_manager.py            # Configuration manager (API keys, base URL)
-├── config.json                  # User configuration (optional)
-├── novel_generator/             # Core chapter generation logic
-├── ui/                          # Graphical user interface
-└── vectorstore/                 # (Optional) Local vector DB storage
+
+**交互式初始化**（可选，配置项目名、数据库、Redis、RabbitMQ、Web API URL、SSO Base URL 等）：
+
+```bash
+node scripts/init-project.js
+```
+
+启动后：
+
+- 前端：http://localhost:3000
+- 后端：http://localhost:3101
+- API 文档：http://localhost:3101/docs
+
+---
+
+## 4. 脚手架使用方式
+
+### 方式一：npx / pnpm create（推荐）
+
+```bash
+npx create-dofe-ai my-app
+# 或
+pnpm create dofe-ai my-app
+```
+
+### 方式二：本地仓库（开发/未发布时）
+
+```bash
+git clone <scaffold-repo-url> scaffold
+cd scaffold
+
+pnpm run export-scaffold        # 生成模板
+pnpm run create-scaffold -- my-app  # 创建项目
+```
+
+### 方式三：直接 clone
+
+```bash
+git clone <scaffold-repo-url> my-project
+cd my-project
+```
+
+### 方式四：GitHub Template
+
+使用 GitHub / GitLab 的 "Use this template" 功能。
+
+### 创建后必做
+
+1. 配置三层配置文件（见[配置体系](#7-配置体系)）
+2. 确认 npm registry 可安装 `@dofe/infra-*`、`@dofe/sso-*` 等共享包
+3. `pnpm install && pnpm db:generate`
+
+---
+
+## 5. 架构与能力
+
+### 目录结构
+
+```
+dofe-ai/
+├── apps/
+│   ├── web/                          # @repo/web — Next.js 16 前端
+│   │   ├── app/                      # App Router 页面
+│   │   ├── components/               # React 组件
+│   │   ├── lib/
+│   │   │   ├── api/                  # ts-rest 客户端 + React Query hooks
+│   │   │   │   ├── contracts/        # ts-rest 合约客户端
+│   │   │   │   └── queries/          # React Query 查询 hooks
+│   │   │   ├── config/               # 前端 env Zod 校验
+│   │   │   ├── actions/              # Next.js Server Actions
+│   │   │   └── agent/                # AI Agent 客户端
+│   │   └── hooks/                    # 自定义 React Hooks
+│   │
+│   └── api/                          # @repo/api — NestJS 后端
+│       ├── src/
+│       │   ├── modules/              # 功能模块（Controller + Service）
+│       │   ├── interceptor/          # 全局拦截器
+│       │   └── common/               # 守卫、中间件、装饰器（→ @dofe/infra-common）
+│       ├── libs/domain/              # 业务域（auth、services）
+│       ├── prisma/                   # 数据库 Schema & 迁移
+│       ├── config.local.yaml         # 结构化配置
+│       └── keys/config.json          # 密钥凭证
+│
+├── packages/                         # 前后端共享包
+│   ├── ui/                           # @repo/ui — 本地 UI 扩展层（shadcn/ui）
+│   ├── utils/                        # @repo/utils — 工具函数
+│   ├── types/                        # @repo/types — TypeScript 类型
+│   ├── config/                       # @repo/config — 共享配置（ESLint、Tailwind 等）
+│   ├── constants/                    # @repo/constants — 常量
+│   ├── validators/                   # @repo/validators — Zod 校验 Schema
+│   ├── contracts/                    # @repo/contracts — ts-rest API 契约
+│   └── create-dofe-ai/              # npm 发布包（脚手架 CLI + 模板）
+│
+└── node_modules/@dofe/infra-*        # 基础设施共享包（npm 依赖）
+```
+
+### Import 别名
+
+**前端** (`apps/web`):
+
+```
+@/*          → apps/web 内部
+@repo/ui     → packages/ui，本地 UI 扩展层；认证/账号/OIDC 相关共享 UI 优先消费 @dofe/sso-ui 或项目 adapter
+@repo/utils  → packages/utils
+@repo/types  → packages/types
+@repo/contracts → packages/contracts
+```
+
+**后端** (`apps/api`):
+
+```
+@/common/*       → @dofe/infra-common/src/*
+@/config/*       → @dofe/infra-common/src/config/*
+@/utils/*        → @dofe/infra-utils/src/*
+@/prisma/*       → @dofe/infra-prisma/src/*
+@app/redis       → libs 中的 Redis 模块
+@app/auth        → libs/domain/auth
+@app/db          → generated/db（自动生成的 DB Service）
+@repo/contracts  → packages/contracts
+```
+
+### 已完成的能力清单
+
+#### 后端基础设施（@dofe/infra-\*，10 个子包）
+
+| 模块                | 能力                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **common**          | `@Cacheable` / `@Transactional` / `@FeatureFlag` 装饰器、拦截器、管道、全局异常过滤器、Winston 日志、三层配置加载器、功能注册表 |
+| **clients**         | SMS（火山引擎 / 阿里云 / 自定义）、对象存储（OSS / TOS / Qiniu / UCloud / GCS）、OCR、TTS、风控、图片处理、IP 归属地            |
+| **prisma**          | 读写分离（prisma-read / prisma-write）、慢查询监控（三级阈值）、软删除中间件、连接池管理                                        |
+| **redis**           | 命名缓存键 + TTL 管理、`@Cacheable` / `@CacheEvict` 装饰器、分布式锁                                                            |
+| **rabbitmq**        | 事件驱动架构、BullMQ 任务队列、`@OnEvent` 装饰器                                                                                |
+| **jwt**             | Token 签发 / 刷新 / 验证、多策略 Passport 认证                                                                                  |
+| **shared-db**       | AsyncLocalStorage 事务上下文、UnitOfWork 模式、指数退避自动重试                                                                 |
+| **shared-services** | 邮件（SendCloud）、短信（多供应商）、文件上传、系统健康检查                                                                     |
+
+#### 后端业务域
+
+| 模块         | 能力                                                                          |
+| ------------ | ----------------------------------------------------------------------------- |
+| **auth**     | JWT 认证、OAuth2（微信 / Google / Discord）、手机号 / 邮箱登录、Refresh Token |
+| **uploader** | 多供应商文件上传、分片上传（50MB）、私有 / 公开桶、CDN 分发                   |
+
+#### 前端
+
+| 能力       | 实现                                                    |
+| ---------- | ------------------------------------------------------- |
+| API 客户端 | ts-rest + React Query — 编译时类型推导，运行时 Zod 校验 |
+| UI 组件库  | shadcn/ui + Tailwind CSS 4 + class-variance-authority   |
+| 国际化     | next-intl（zh-CN / en），12 个命名空间                  |
+| 状态管理   | React Query（服务端状态）+ Zustand（客户端状态）        |
+| 权限控制   | RBAC + `usePermissions` hook                            |
+| AI Agent   | 多智能体聊天客户端                                      |
+| 配置校验   | Zod Schema 校验前端 env，校验失败降级为默认值           |
+| 监控       | 页面追踪、性能监控                                      |
+
+#### 配置体系
+
+| 能力     | 实现                                                                        |
+| -------- | --------------------------------------------------------------------------- |
+| 三层配置 | `.env`（连接串）+ `config.local.yaml`（结构化）+ `keys/config.json`（密钥） |
+| Zod 校验 | 三层配置 + 前端 env 均通过 Zod Schema 校验                                  |
+| 功能注册 | `requiredFeatures` 按需声明，启动时自动校验完整性                           |
+| 向后兼容 | `syncKeysToEnv()` 自动将 keys 密钥注入 process.env                          |
+| 统一错误 | `FeatureNotConfiguredError` — dev 警告，prod 阻止启动                       |
+
+#### 数据库模型
+
+| 模型        | 说明                                                     |
+| ----------- | -------------------------------------------------------- |
+| UserInfo    | 用户档案，多认证标识符                                   |
+| Auth        | OAuth（微信 / Google / Discord / 手机 / 邮箱）+ 密码认证 |
+| FileSource  | 多供应商文件存储（OSS / TOS / Qiniu / GCS / UCloud）     |
+| CountryCode | 大洲 / 国家映射（IP 归属地）                             |
+
+---
+
+## 6. 核心数据流
+
+### API 契约流（ts-rest + Zod）
+
+前后端通过共享的 `@repo/contracts` 包实现端到端类型安全：
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    @repo/contracts                               │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  contract = c.router({                                     │  │
+│  │    list: {                                                 │  │
+│  │      method: 'GET', path: '/list',                        │  │
+│  │      query: PaginationQuerySchema,     ← Zod Schema      │  │
+│  │      responses: { 200: PaginatedResponseSchema }         │  │
+│  │    }                                                       │  │
+│  │  })                                                        │  │
+│  └──────────────────────────┬─────────────────────────────────┘  │
+│                             │                                     │
+│              ┌──────────────┴──────────────┐                     │
+│              ▼                             ▼                      │
+│     Backend (NestJS)              Frontend (React)               │
+│  ┌────────────────────┐       ┌──────────────────────┐          │
+│  │ @TsRestHandler(c)  │       │ useQuery({           │          │
+│  │ 自动校验 query/body │       │   queryKey,          │          │
+│  │ 返回类型安全        │       │   queryData: {query} │          │
+│  └────────────────────┘       │ })                    │          │
+│                               └──────────────────────┘          │
+│  编译时：TypeScript 推导 query/body/response 类型                  │
+│  运行时：Zod Schema 自动校验请求和响应                              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 请求生命周期
+
+```
+Client Request
+    │
+    ▼
+Fastify (rate limit → CORS → cookie)
+    │
+    ▼
+NestJS Pipeline
+    ├── GlobalPrefix: /
+    ├── Versioning: x-api-version header
+    ├── Guard: VersionGuard
+    ├── Pipe: ValidationPipe (transform)
+    ├── Middleware: RequestMiddleware (auth context)
+    │
+    ▼
+Controller (@TsRestHandler)
+    │  ← Zod 校验 query / body / pathParams
+    │
+    ▼
+Service (业务逻辑)
+    │  ← 使用 Prisma 类型构建查询条件
+    │  ← 调用 DB Service 方法执行数据库操作
+    │  ← 调用 Client 层访问外部服务
+    │
+    ▼
+Interceptor: TransformInterceptor
+    │  ← 统一包装 { code, msg, data }
+    │
+    ▼
+Client Response
+```
+
+### 分页标准模式
+
+所有 GET 列表端点遵循统一分页规范：
+
+```typescript
+// Request
+const query = PaginationQuerySchema.extend({ status: z.string().optional() });
+
+// Response
+const response = PaginatedResponseSchema(ItemSchema);
+// → { list: T[], total: number, page: number, limit: number }
 ```
 
 ---
 
-## ⚙️ Configuration Guide
-### 📌 Basic configuration (`config.json`)
-See `config.example.json` for a complete example. Current configs are grouped by model presets and task routing:
+## 7. 配置体系
+
+三层配置架构，所有配置均通过 Zod 校验：
+
+| 层  | 文件                | 内容           | 校验               |
+| --- | ------------------- | -------------- | ------------------ |
+| 1   | `.env`              | 基础设施连接串 | `envSchema`        |
+| 2   | `config.local.yaml` | 结构化配置     | `yamlConfigSchema` |
+| 3   | `keys/config.json`  | 所有密钥凭证   | `keysConfigSchema` |
+
+### `.env` — 基础设施连接串
+
+仅保留启动必需的连接信息，**不含任何密钥**：
+
+```env
+NODE_ENV=dev
+BASE_HOST=127.0.0.1
+DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+READ_DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+REDIS_URL=redis://localhost:6379
+RABBITMQ_URL=amqp://localhost:5672
+RABBITMQ_EVENTS_URL=amqp://user:password@${BASE_HOST}:5672/events
+API_BASE_URL=http://localhost:3101
+INTERNAL_API_BASE_URL=http://127.0.0.1:3101
+```
+
+### `config.local.yaml` — 结构化配置
+
+非敏感的结构化配置 + 功能声明：
+
+```yaml
+app:
+  name: 'my-app'
+  port: 3101
+  domain: 'my-app.example.com'
+  requiredFeatures: # 声明项目依赖的功能模块
+    - database
+    - redis
+    - rabbitmq
+    - jwt
+    - crypto
+    - email
+    # ...
+```
+
+还包含：功能开关、限流配置、CDN、Redis 缓存键定义、存储桶定义、数据库监控、事务重试、Prisma 配置。
+
+### `keys/config.json` — 所有密钥
+
+统一管理所有密钥凭证（JWT、Crypto、第三方服务）：
+
 ```json
 {
-   "last_llm_config_name": "DeepSeek V4 Flash",
-   "llm_configs": {
-      "DeepSeek V4 Flash": {
-         "api_key": "",
-         "base_url": "https://api.deepseek.com",
-         "interface_format": "DeepSeek",
-         "model_name": "deepseek-v4-flash",
-         "temperature": 0.7,
-         "max_tokens": 8192,
-         "timeout": 600
-      },
-      "DeepSeek V4 Pro": {
-         "api_key": "",
-         "base_url": "https://api.deepseek.com",
-         "interface_format": "DeepSeek",
-         "model_name": "deepseek-v4-pro",
-         "temperature": 0.7,
-         "max_tokens": 32768,
-         "timeout": 600
-      },
-      "Gemini 3.5 Flash": {
-         "api_key": "",
-         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-         "interface_format": "Gemini",
-         "model_name": "gemini-3.5-flash",
-         "temperature": 0.7,
-         "max_tokens": 32768,
-         "timeout": 600
-      }
-   },
-   "embedding_configs": {
-      "OpenAI": {
-         "api_key": "",
-         "base_url": "https://api.openai.com/v1",
-         "interface_format": "OpenAI",
-         "model_name": "text-embedding-3-small",
-         "retrieval_k": 4
-      }
-   },
-   "choose_configs": {
-      "architecture_llm": "Gemini 3.5 Flash",
-      "chapter_outline_llm": "Gemini 3.5 Flash",
-      "prompt_draft_llm": "DeepSeek V4 Flash",
-      "final_chapter_llm": "DeepSeek V4 Pro",
-      "consistency_review_llm": "DeepSeek V4 Flash"
-   }
+  "jwt": { "secret": "...", "expireIn": 3600 },
+  "crypto": { "key": "...", "iv": "..." },
+  "encryption": { "key": "..." },
+  "admin": { "registerSecret": "..." },
+  "sendcloud": { "apiUser": "...", "apiKey": "..." },
+  "sms": { "default": "volcengine", "providers": [...] },
+  "storage": { "oss": {...}, "tos": {...}, "qiniu": {...} },
+  "openai": { "apiKey": "...", "baseUrl": "..." }
 }
 ```
 
-### 🔧 Explanation
-1. **Generation model configuration**
-   - `api_key`: API key for the LLM service
-   - `base_url`: API endpoint (for local services use the Ollama address)
-   - `interface_format`: Interface mode
-   - `model_name`: Main generation model (e.g., `deepseek-v4-flash`, `gemini-3.5-flash`, `gpt-5.5`)
-   - `temperature`: Creativity parameter (0–1, higher is more creative)
-   - `max_tokens`: Maximum model response length
+### 功能校验
 
-2. **Embedding model configuration**
-   - `embedding_model_name`: Embedding model name (e.g., `text-embedding-3-small`, `gemini-embedding-2`, or Ollama's `nomic-embed-text`)
-   - `embedding_url`: Service endpoint
-   - `embedding_retrieval_k`: Number of nearest neighbors to retrieve
+启动时 `initAllConfig()` 自动校验所有声明的 `requiredFeatures`：
 
-3. **Novel parameters**
-   - `topic`: Core story theme
-   - `genre`: Genre
-   - `num_chapters`: Total number of chapters
-   - `word_number`: Target words per chapter
-   - `filepath`: Path to save generated files
-
----
-
-## 🚀 Run Instructions
-### Method 1 — Run with Python
-```bash
-python main.py
 ```
-This launches the GUI for interactive use.
-
-### Method 2 — Build an executable
-If you want to run the tool on machines without Python, package it with **PyInstaller**:
-```bash
-pip install pyinstaller
-pyinstaller main.spec
+main.ts 启动流程:
+1. loadEnv()              ← 加载 .env
+2. initAllConfig()        ← 一次性完成：
+   ├─ initEnvValidation()     校验 .env
+   ├─ initConfig()            加载 config.local.yaml
+   ├─ initKeysConfig()        加载 keys/config.json
+   ├─ syncKeysToEnv()         向后兼容注入 process.env
+   └─ validateRequiredFeatures()  按声明校验
+       ├─ dev:  警告 + 继续
+       └─ prod: 报错 + 阻止启动
+3. NestFactory.create()   ← 创建应用
 ```
-After packaging an executable (e.g., `main.exe` on Windows) will appear in the `dist/` folder.
+
+### 前端配置
+
+前端 env 通过 Zod 校验（`apps/web/lib/config/env.ts`），校验失败降级为默认值而不阻止启动。
 
 ---
 
-## 📘 User Guide
-1. **After launching the app, fill in the basic parameters:**  
-   - **API Key & Base URL** (e.g., `https://api.openai.com/v1`)  
-   - **Model name** (e.g., `deepseek-v4-flash`, `gemini-3.5-flash`, `gpt-5.5`)
-   - **Temperature** (0–1, controls creative variance)  
-   - **Topic** (e.g., "AI uprising in a post-apocalyptic world")  
-   - **Genre** (e.g., "Sci-fi" / "Fantasy" / "Urban Fantasy")  
-   - **Number of chapters** and **words per chapter** (e.g., 10 chapters × ~3000 words)  
-   - **Save path** (create a new output folder for results)
+## 8. 可用命令
 
-2. **Click "Step1. Generate Settings"**  
-   - The system will generate, based on topic/genre/chapter count:  
-     - `Novel_setting.txt`: Worldbuilding, characters, trigger points and foreshadowing.  
-   - You can view or edit these settings after generation.
+```bash
+# 开发
+pnpm dev                # 启动所有应用
+pnpm dev:web            # 仅前端
+pnpm dev:api            # 仅后端
 
-3. **Click "Step2. Generate Directory"**  
-   - The system will use `Novel_setting.txt` to produce:  
-     - `Novel_directory.txt`: Chapter titles and short prompts.  
-   - You can review and modify chapter titles and descriptions.
+# 构建
+pnpm build              # 构建所有
+pnpm build:web          # 仅前端
+pnpm build:api          # 仅后端
 
-4. **Click "Step3. Generate Chapter Draft"**  
-   - Before generating a chapter you can:  
-     - Set the chapter number (e.g., `1`)  
-     - Provide chapter-specific guidance in the "This chapter guidance" box  
-   - When you generate a chapter the system will:  
-     - Read prior settings, `Novel_directory.txt`, and finalized chapters  
-     - Use vector retrieval to recall relevant context for coherence  
-     - Produce an outline (`outline_X.txt`) and chapter text (`chapter_X.txt`)  
-   - You can view and edit the draft in the editor pane.
+# 数据库
+pnpm db:generate        # 生成 Prisma Client
+pnpm db:migrate:dev     # 运行迁移（开发）
+pnpm db:migrate:deploy  # 运行迁移（生产）
+pnpm db:push            # 推送 Schema 变更
 
-5. **Click "Step4. Finalize Current Chapter"**  
-   - The system will:  
-     - Update the global summary (`global_summary.txt`)  
-     - Update character states (`character_state.txt`)  
-     - Update the vector store (so future chapters can use the latest info)  
-     - Update major plot points (e.g., `plot_arcs.txt`)  
-   - After finalizing you will see the finalized text in `chapter_X.txt`.
+# 代码质量
+pnpm lint               # Lint 全部
+pnpm lint:web           # Lint 前端
+pnpm lint:api           # Lint 后端
+pnpm type-check         # 类型检查
+pnpm test               # 运行测试
+pnpm test:api           # 仅后端测试
 
-6. **Consistency check (optional)**  
-   - Click the "[Optional] Consistency Proofread" button to scan the latest chapter for conflicts (character logic, plot contradictions, etc.).  
-   - If conflicts are detected, detailed messages will appear in the log area.
+# 清理
+pnpm clean              # 清理构建产物
 
-7. **Repeat steps 4–6** until all chapters are generated and finalized.
-
-> Vector retrieval tips:
-> 1. Explicitly set the embedding interface and model name.
-> 2. For local Ollama embeddings start the Ollama service first:
->    ```bash
->    ollama serve  # Start the service
->    ollama pull nomic-embed-text  # Download/enable the model
->    ```
-> 3. Clear the `vectorstore` directory after switching embedding models.
-> 4. For cloud embeddings ensure the API permissions are enabled.
+# 脚手架
+pnpm run export-scaffold    # 导出模板到 packages/create-dofe-ai/template/
+pnpm run create-scaffold    # 基于模板创建新项目
+```
 
 ---
 
-## ❓ FAQ
-### Q1: Expecting value: line 1 column 1 (char 0)
+## 9. 发布到 npm
 
-This error usually indicates the API did not return valid JSON—sometimes an HTML error page or other unexpected content was returned.
+只有 `create-dofe-ai` 包会发布到 npm，其余包均标记为 `private: true`。
 
-### Q2: HTTP/1.1 504 Gateway Timeout?
+### 发布步骤
 
-Check the stability of the API endpoint and network connectivity.
+```bash
+# 1. 在仓库根目录，导出 git 跟踪文件到模板目录
+pnpm run export-scaffold
 
-### Q3: How do I switch Embedding providers?
+# 2. 进入 create-dofe-ai 包目录
+cd packages/create-dofe-ai
 
-Enter the new provider settings in the GUI fields for embedding configuration.
+# 3. 验证包内容（可选）
+npm pack --dry-run
+
+# 4. 发布
+npm publish
+# scope 包需加 --access public
+
+# 5. 更新版本后重新发布
+npm version patch   # 或 minor, major
+npm publish
+```
+
+### 导出脚本做了什么
+
+`scripts/export-scaffold-for-create.js`：
+
+1. `git ls-files` 获取所有 git 跟踪文件
+2. 排除：脚手架自身、构建产物、旧文档、AI/编辑器配置
+3. 复制到 `packages/create-dofe-ai/template/`
+4. 复制 `.gitignore` 为模板可发布的 `_gitignore`
+
+### 常见问题
+
+| 问题                  | 解决                              |
+| --------------------- | --------------------------------- |
+| `404 Not Found`       | 包未发布，先执行发布流程          |
+| `403 Forbidden`       | scope 包加 `--access public`      |
+| `prepublishOnly` 失败 | 先运行 `pnpm run export-scaffold` |
+| 需要 2FA              | 使用 `--otp=<code>` 参数          |
+
+详细指南见 [docs/发布到npm.md](./docs/发布到npm.md)。
 
 ---
 
-If you have further questions or feature requests, please open an issue on the project repository.
+## 10. Docker 部署
+
+```bash
+# 仅启动基础设施
+docker compose up -d postgres redis rabbitmq
+
+# 启动全部服务
+docker compose up -d
+
+# 重新构建 API
+docker compose up -d --build api
+```
+
+API 容器自动挂载配置文件（只读）：
+
+- `./apps/api/config.local.yaml:/app/config.local.yaml:ro`
+- `./apps/api/keys/config.json:/app/keys/config.json:ro`
+
+| 服务       | 端口         | 说明                |
+| ---------- | ------------ | ------------------- |
+| PostgreSQL | 5432         | 数据库              |
+| Redis      | 6379         | 缓存                |
+| RabbitMQ   | 5672 / 15672 | 消息队列 / 管理界面 |
+| API        | 3101         | NestJS 后端         |
+| Web        | 3000         | Next.js 前端        |
+
+---
+
+## 11. 文档索引
+
+| 文档                       | 路径                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 脚手架范围说明             | [docs/脚手架说明.md](./docs/脚手架说明.md)                                                           |
+| 发布到 npm 指南            | [docs/发布到npm.md](./docs/发布到npm.md)                                                             |
+| 配置分层设计方案           | [docs/0429/env-opz/配置分层与校验优化设计方案.md](./docs/0429/env-opz/配置分层与校验优化设计方案.md) |
+| 配置实施总结               | [docs/0429/env-opz/scaffold-实施总结.md](./docs/0429/env-opz/scaffold-实施总结.md)                   |
+| 架构分层与事务管理         | apps/api/docs/架构分层与事务管理方案-new.md                                                          |
+| ts-rest Zod-first 协议设计 | docs/ts-rest*Zod-first_REST*协议框架设计方案.md                                                      |
+| 业务与基础设施拆分         | apps/api/docs/业务与基础设施拆分方案.md                                                              |
+
+---
+
+## License
+
+MIT License

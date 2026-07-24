@@ -1,0 +1,82 @@
+/**
+ * File upload — via @dofe/file-sdk-web → sso.dofe.ai
+ *
+ * Public API preserved for backward compatibility with existing consumers.
+ */
+import { FileUploader } from '@dofe/file-sdk-web';
+import { UploadError, UploadErrorCode } from './errors';
+import type { UploadMetadata } from './api';
+
+const uploader = new FileUploader({
+  apiBase: '/api/proxy/sso',
+});
+
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+  percentage: number;
+  partNumber?: number;
+}
+
+export interface UploadResult {
+  id: string;
+  fileId: string;
+  key: string;
+  url: string;
+  cdnUrl: string | null;
+  bucket: string;
+}
+
+export interface UploadCallbacks {
+  onStart?: (fileId: string, uploadId?: string) => void;
+  onCalculating?: (progress: number) => void;
+  onProgress?: (progress: UploadProgress) => void;
+  onComplete?: (result: UploadResult) => void;
+  onError?: (error: Error) => void;
+}
+
+export interface UploadParams {
+  file: File;
+  callbacks?: UploadCallbacks;
+  metadata?: UploadMetadata;
+}
+
+export async function uploadFile(params: UploadParams): Promise<UploadResult> {
+  const { file, callbacks, metadata } = params;
+
+  callbacks?.onCalculating?.(0);
+
+  try {
+    const result = await uploader.upload(file, {
+      scope: 'general',
+      metadata,
+      onProgress: ({ percent, loaded, total }) => {
+        callbacks?.onProgress?.({ percentage: percent, loaded, total });
+      },
+    });
+
+    callbacks?.onCalculating?.(100);
+    callbacks?.onStart?.(result.fileId);
+
+    const uploadResult: UploadResult = {
+      id: result.fileId,
+      fileId: result.fileId,
+      key: result.key,
+      url: result.url,
+      cdnUrl: result.cdnUrl,
+      bucket: result.bucket,
+    };
+
+    callbacks?.onComplete?.(uploadResult);
+    return uploadResult;
+  } catch (error) {
+    const uploadError =
+      error instanceof UploadError ? error : new UploadError(UploadErrorCode.UPLOAD_FAILED);
+    callbacks?.onError?.(uploadError);
+    throw uploadError;
+  }
+}
+
+export async function cancelUpload(_filename: string, _fileId: string): Promise<void> {
+  // FileUploader does not support cancellation; no-op.
+}

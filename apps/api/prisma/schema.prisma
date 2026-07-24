@@ -1,0 +1,464 @@
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../generated/prisma-client"
+  previewFeatures = ["postgresqlExtensions"]
+  binaryTargets   = ["native", "debian-openssl-1.1.x", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [uuid_ossp(map: "uuid-ossp")]
+}
+
+// ============================================================================
+// User System - 用户系统
+// ============================================================================
+enum SexType {
+  UNKNOWN
+  MALE
+  FEMALE
+
+  @@map("sex_type")
+}
+
+model UserInfo {
+  id           String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ssoSub       String? @unique @map("sso_sub") @db.VarChar(255) /// SSO 用户唯一标识（sso.dofe.ai 的 user.id）
+  nickname     String  @default("") @db.VarChar(255)
+  code         String? @unique @db.VarChar(255)
+  avatarFileId String? @map("avatar_file_id") @db.Uuid /// 头像文件ID，仅保存 sso.dofe.ai 文件ID引用
+  sex          SexType @default(UNKNOWN)
+  locale       String? @db.VarChar(20)
+  isAdmin      Boolean @default(false) @map("is_admin")
+  email        String? @db.VarChar(255) /// 来自 SSO，仅用于 profile 展示
+  mobile       String? @db.VarChar(40) /// 来自 SSO，仅用于 profile 展示
+
+  role     String  @default("user")
+  isActive Boolean @default(true) @map("is_active")
+
+  isDeleted Boolean   @default(false) @map("is_deleted")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([code])
+  @@index([ssoSub])
+  @@index([isDeleted, isAdmin])
+  @@index([createdAt(sort: Desc)])
+  @@index([nickname])
+  @@index([avatarFileId])
+  @@map("u_user_info")
+}
+
+// ============================================================================
+// Auth/file source tables are not defined locally.
+// Authentication and file metadata are owned only by sso.dofe.ai.
+// This project stores SSO user/file identifiers and consumes them via SDK/client APIs.
+// ============================================================================
+
+// ============================================================================
+// Country Code - 国家代码（用于 IP 信息）
+// ============================================================================
+
+model CountryCode {
+  id        String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  continent String    @db.VarChar(10) // us, eu, ap, cn
+  code      String    @db.VarChar(10) // 国家代码，如 CN, US, SG
+  isDeleted Boolean   @default(false) @map("is_deleted")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@unique([continent, code])
+  @@index([continent])
+  @@index([code])
+  @@map("country_code")
+}
+
+/// 审计日志（参考 models.dofe.ai：业务主动调用 AuditLogService 记录管理操作，不挂全局拦截器）
+model AuditLog {
+  id String @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+
+  // 操作信息
+  action     AuditActionType @map("action")
+  resource   String          @map("resource") @db.VarChar(100)
+  resourceId String?         @map("resource_id") @db.VarChar(255)
+
+  // 操作者
+  actorType String  @map("actor_type") @db.VarChar(50)
+  actorId   String? @map("actor_id") @db.VarChar(255)
+  teamId    String? @map("team_id") @db.Uuid
+
+  // 操作详情
+  changes  Json? @map("changes")
+  metadata Json? @map("metadata")
+
+  // 结果
+  status   String  @default("success") @map("status") @db.VarChar(20)
+  errorMsg String? @map("error_msg") @db.VarChar(500)
+
+  // 请求信息
+  ipAddress String? @map("ip_address") @db.VarChar(45)
+  userAgent String? @map("user_agent") @db.VarChar(500)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([teamId, createdAt(sort: Desc)])
+  @@index([teamId, actorId])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([resource, resourceId])
+  @@index([actorId])
+  @@map("audit_logs")
+}
+
+enum AuditActionType {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  ACCESS
+  EXPORT
+  IMPORT
+
+  @@map("audit_action_type")
+}
+
+// NestJS owns project ownership and generation history. Python receives only
+// the scoped execution request and is never the source of truth for either.
+enum StudioGenerationRunStatus {
+  QUEUED    @map("queued")
+  RUNNING   @map("running")
+  SUCCEEDED @map("succeeded")
+  FAILED    @map("failed")
+
+  @@map("studio_generation_run_status")
+}
+
+enum StudioGenerationRunType {
+  BLUEPRINT     @map("blueprint")
+  CHAPTER_DRAFT @map("chapter_draft")
+
+  @@map("studio_generation_run_type")
+}
+
+enum StudioBlueprintStatus {
+  DRAFT     @map("draft")
+  CONFIRMED @map("confirmed")
+
+  @@map("studio_blueprint_status")
+}
+
+enum StudioChapterPlanStatus {
+  DRAFT     @map("draft")
+  CONFIRMED @map("confirmed")
+
+  @@map("studio_chapter_plan_status")
+}
+
+enum StudioChapterRevisionStatus {
+  DRAFT      @map("draft")
+  FINALIZED  @map("finalized")
+  SUPERSEDED @map("superseded")
+
+  @@map("studio_chapter_revision_status")
+}
+
+enum StudioChapterFinalizationStatus {
+  FINALIZED @map("finalized")
+
+  @@map("studio_chapter_finalization_status")
+}
+
+enum StudioFinalizationTaskStatus {
+  PENDING   @map("pending")
+  COMPLETED @map("completed")
+  FAILED    @map("failed")
+
+  @@map("studio_finalization_task_status")
+}
+
+enum StudioFactStatus {
+  CONFIRMED @map("confirmed")
+  RETIRED   @map("retired")
+
+  @@map("studio_fact_status")
+}
+
+enum StudioFactChangeOperation {
+  ADD    @map("add")
+  UPDATE @map("update")
+  REMOVE @map("remove")
+
+  @@map("studio_fact_change_operation")
+}
+
+enum StudioFactChangeStatus {
+  PROPOSED @map("proposed")
+  ACCEPTED @map("accepted")
+  REJECTED @map("rejected")
+
+  @@map("studio_fact_change_status")
+}
+
+model StudioProject {
+  id                    String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ownerId               String   @map("owner_id") @db.Uuid
+  title                 String   @db.VarChar(120)
+  format                String   @default("novel") @db.VarChar(20)
+  genre                 String   @db.VarChar(80)
+  premise               String   @db.Text
+  chapterCount          Int      @map("chapter_count")
+  targetWordsPerChapter Int      @map("target_words_per_chapter")
+  guidance              String   @default("") @db.Text
+  generateOutline       Boolean  @default(true) @map("generate_outline")
+  currentBlueprintId    String?  @unique @map("current_blueprint_id") @db.Uuid
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  runs                 StudioGenerationRun[]
+  blueprints           StudioBlueprint[]           @relation("StudioProjectBlueprints")
+  currentBlueprint     StudioBlueprint?            @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
+  chapterPlans         StudioChapterPlan[]
+  chapterRevisions     StudioChapterRevision[]
+  chapterDraftPointers StudioChapterDraftPointer[]
+  chapterFinalizations StudioChapterFinalization[]
+  chapterFinalPointers StudioChapterFinalPointer[]
+  facts                StudioFact[]
+  factChanges          StudioFactChange[]
+
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@map("studio_projects")
+}
+
+model StudioGenerationRun {
+  id             String                    @id @db.Uuid
+  projectId      String                    @map("project_id") @db.Uuid
+  chapterPlanId  String?                   @map("chapter_plan_id") @db.Uuid
+  type           StudioGenerationRunType   @default(BLUEPRINT)
+  status         StudioGenerationRunStatus @default(QUEUED)
+  progress       Int                       @default(0)
+  currentStep    String                    @default("Queued for generation") @map("current_step") @db.VarChar(255)
+  architecture   String?                   @db.Text
+  outline        String?                   @db.Text
+  chapterContent String?                   @map("chapter_content") @db.Text
+  inputSummary   String?                   @map("input_summary") @db.Text
+  modelConfig    Json                      @default("{}") @map("model_config")
+  factChanges    Json                      @default("[]") @map("fact_changes")
+  error          String?                   @db.Text
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project          StudioProject           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  chapterPlan      StudioChapterPlan?      @relation(fields: [chapterPlanId], references: [id], onDelete: Restrict)
+  blueprints       StudioBlueprint[]
+  chapterRevisions StudioChapterRevision[]
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([status, updatedAt(sort: Desc)])
+  @@index([chapterPlanId, createdAt(sort: Desc)])
+  @@map("studio_generation_runs")
+}
+
+model StudioBlueprint {
+  id            String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String                @map("project_id") @db.Uuid
+  runId         String?               @unique @map("run_id") @db.Uuid
+  version       Int
+  status        StudioBlueprintStatus @default(DRAFT)
+  architecture  String                @db.Text
+  outline       String                @default("") @db.Text
+  source        String                @default("ai") @db.VarChar(20)
+  schemaVersion Int                   @default(1) @map("schema_version")
+  contentHash   String                @map("content_hash") @db.Char(64)
+  createdAt     DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project           StudioProject        @relation("StudioProjectBlueprints", fields: [projectId], references: [id], onDelete: Restrict)
+  sourceRun         StudioGenerationRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  currentForProject StudioProject?       @relation("StudioProjectCurrentBlueprint")
+  chapterPlans      StudioChapterPlan[]
+
+  @@unique([projectId, version])
+  @@index([projectId, status, version(sort: Desc)])
+  @@map("studio_blueprints")
+}
+
+model StudioChapterPlan {
+  id             String                  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId      String                  @map("project_id") @db.Uuid
+  blueprintId    String                  @map("blueprint_id") @db.Uuid
+  chapterNumber  Int                     @map("chapter_number")
+  version        Int
+  status         StudioChapterPlanStatus @default(DRAFT)
+  title          String                  @db.VarChar(200)
+  goal           String                  @db.Text
+  conflict       String                  @default("") @db.Text
+  characters     Json                    @default("[]")
+  location       String                  @default("") @db.VarChar(200)
+  timeConstraint String                  @default("") @map("time_constraint") @db.VarChar(500)
+  foreshadowing  String                  @default("") @db.Text
+  hook           String                  @default("") @db.Text
+  source         String                  @default("author") @db.VarChar(20)
+  schemaVersion  Int                     @default(1) @map("schema_version")
+  contentHash    String                  @map("content_hash") @db.Char(64)
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project   StudioProject           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  blueprint StudioBlueprint         @relation(fields: [blueprintId], references: [id], onDelete: Restrict)
+  runs      StudioGenerationRun[]
+  revisions StudioChapterRevision[]
+
+  @@unique([projectId, chapterNumber, version])
+  @@index([projectId, chapterNumber, version(sort: Desc)])
+  @@index([projectId, status, chapterNumber])
+  @@map("studio_chapter_plans")
+}
+
+model StudioChapterRevision {
+  // The revision id intentionally equals the generation-run id. This makes a
+  // completed job directly addressable without making draft contents mutable.
+  id               String                      @id @db.Uuid
+  projectId        String                      @map("project_id") @db.Uuid
+  chapterPlanId    String                      @map("chapter_plan_id") @db.Uuid
+  runId            String                      @unique @map("run_id") @db.Uuid
+  chapterNumber    Int                         @map("chapter_number")
+  version          Int
+  status           StudioChapterRevisionStatus @default(DRAFT)
+  content          String                      @db.Text
+  wordCount        Int                         @map("word_count")
+  promptSummary    String                      @default("") @map("prompt_summary") @db.Text
+  modelConfig      Json                        @default("{}") @map("model_config")
+  source           String                      @default("ai") @db.VarChar(20)
+  schemaVersion    Int                         @default(1) @map("schema_version")
+  contentHash      String                      @map("content_hash") @db.Char(64)
+  sourceRevisionId String?                     @map("source_revision_id") @db.Uuid
+  createdAt        DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project          StudioProject              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  chapterPlan      StudioChapterPlan          @relation(fields: [chapterPlanId], references: [id], onDelete: Restrict)
+  sourceRun        StudioGenerationRun        @relation(fields: [runId], references: [id], onDelete: Restrict)
+  sourceRevision   StudioChapterRevision?     @relation("StudioRevisionLineage", fields: [sourceRevisionId], references: [id], onDelete: SetNull)
+  derivedRevisions StudioChapterRevision[]    @relation("StudioRevisionLineage")
+  currentPointer   StudioChapterDraftPointer?
+  finalization     StudioChapterFinalization?
+  currentFinal     StudioChapterFinalPointer?
+  factChanges      StudioFactChange[]
+
+  @@unique([projectId, chapterNumber, version])
+  @@index([projectId, chapterNumber, createdAt(sort: Desc)])
+  @@map("studio_chapter_revisions")
+}
+
+model StudioFact {
+  id               String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId        String           @map("project_id") @db.Uuid
+  sourceChangeId   String?          @unique @map("source_change_id") @db.Uuid
+  factType         String           @map("fact_type") @db.VarChar(80)
+  subject          String           @db.VarChar(200)
+  predicate        String           @db.VarChar(200)
+  value            String           @db.Text
+  effectiveChapter Int              @map("effective_chapter")
+  status           StudioFactStatus @default(CONFIRMED)
+  schemaVersion    Int              @default(1) @map("schema_version")
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project       StudioProject      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  sourceChange  StudioFactChange?  @relation("FactCreatedFromChange", fields: [sourceChangeId], references: [id], onDelete: SetNull)
+  targetChanges StudioFactChange[] @relation("FactTargetChanges")
+
+  @@index([projectId, status, effectiveChapter])
+  @@index([projectId, factType, subject])
+  @@map("studio_facts")
+}
+
+model StudioFactChange {
+  id            String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String                    @map("project_id") @db.Uuid
+  revisionId    String                    @map("revision_id") @db.Uuid
+  chapterNumber Int                       @map("chapter_number")
+  factId        String?                   @map("fact_id") @db.Uuid
+  operation     StudioFactChangeOperation
+  factType      String                    @map("fact_type") @db.VarChar(80)
+  subject       String                    @db.VarChar(200)
+  predicate     String                    @db.VarChar(200)
+  proposedValue String                    @default("") @map("proposed_value") @db.Text
+  rationale     String                    @default("") @db.Text
+  evidence      String                    @default("") @db.Text
+  confidence    Float?
+  source        String                    @default("ai") @db.VarChar(20)
+  status        StudioFactChangeStatus    @default(PROPOSED)
+  resolvedValue String?                   @map("resolved_value") @db.Text
+  resolvedAt    DateTime?                 @map("resolved_at") @db.Timestamptz(6)
+  createdAt     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project     StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision    StudioChapterRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  targetFact  StudioFact?           @relation("FactTargetChanges", fields: [factId], references: [id], onDelete: Restrict)
+  createdFact StudioFact?           @relation("FactCreatedFromChange")
+
+  @@index([projectId, chapterNumber, status])
+  @@index([revisionId, status])
+  @@map("studio_fact_changes")
+}
+
+// A restore only changes this pointer. It never updates or deletes the
+// immutable revision selected by the author.
+model StudioChapterDraftPointer {
+  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  chapterNumber Int      @map("chapter_number")
+  revisionId    String   @unique @map("revision_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project  StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision StudioChapterRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, chapterNumber])
+  @@map("studio_chapter_draft_pointers")
+}
+
+// Finalization never mutates a revision's content. This pointer selects the
+// final revision used by later export and generation-context work.
+model StudioChapterFinalPointer {
+  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  chapterNumber Int      @map("chapter_number")
+  revisionId    String   @unique @map("revision_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project  StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision StudioChapterRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, chapterNumber])
+  @@map("studio_chapter_final_pointers")
+}
+
+// The transaction record is the durable source for post-finalization tasks.
+// Summary and index work remain visibly pending until their executors exist.
+model StudioChapterFinalization {
+  id            String                         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String                         @map("project_id") @db.Uuid
+  revisionId    String                         @unique @map("revision_id") @db.Uuid
+  chapterNumber Int                            @map("chapter_number")
+  status        StudioChapterFinalizationStatus @default(FINALIZED)
+  summaryStatus StudioFinalizationTaskStatus    @default(PENDING) @map("summary_status")
+  indexStatus   StudioFinalizationTaskStatus    @default(PENDING) @map("index_status")
+  summary       String?                        @db.Text
+  error         String?                        @db.Text
+  finalizedAt   DateTime                       @default(now()) @map("finalized_at") @db.Timestamptz(6)
+  createdAt     DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project  StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision StudioChapterRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, chapterNumber, finalizedAt(sort: Desc)])
+  @@map("studio_chapter_finalizations")
+}
