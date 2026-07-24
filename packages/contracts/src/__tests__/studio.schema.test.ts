@@ -1,4 +1,8 @@
-import { CreateStudioProjectSchema, GenerationJobSchema } from '../schemas/studio.schema';
+import {
+  CreateStudioAuthorRevisionSchema,
+  CreateStudioProjectSchema,
+  GenerationJobSchema,
+} from '../schemas/studio.schema';
 
 describe('studio schemas', () => {
   it('applies generation defaults at the API boundary', () => {
@@ -36,5 +40,18 @@ describe('studio schemas', () => {
         updatedAt: '2026-07-24T10:01:00.000Z',
       }).status,
     ).toBe('succeeded');
+  });
+
+  it('preserves author revision content while rejecting whitespace-only text', () => {
+    expect(
+      CreateStudioAuthorRevisionSchema.parse({
+        content: '  雨声先于信件抵达。\n',
+        editSummary: '补充开场氛围。',
+      }),
+    ).toEqual({
+      content: '  雨声先于信件抵达。\n',
+      editSummary: '补充开场氛围。',
+    });
+    expect(CreateStudioAuthorRevisionSchema.safeParse({ content: ' \n ' }).success).toBe(false);
   });
 });

@@ -149,6 +149,97 @@ def test_repeated_request_returns_the_existing_run_without_scheduling_a_second_j
     assert scheduled == [UUID(RUN_ID)]
 
 
+def test_runtime_restores_interrupted_job_from_checkpoint_and_reschedules_it(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    api.jobs.clear()
+    monkeypatch.setattr(api.engine, '_settings', RuntimeSettings(
+        storage_root=tmp_path,
+        shared_secret='test-runtime-secret',
+        api_key='test-key',
+        base_url='https://example.test/v1',
+        model='test-model',
+        interface_format='OpenAI',
+        temperature=0.7,
+        max_tokens=100,
+        timeout_seconds=10,
+    ))
+    now = api.utc_now()
+    interrupted = api.GenerationJob(
+        id=RUN_ID,
+        ownerId=OWNER_ID,
+        project=api.ProjectSummary(**make_request().project.model_dump()),
+        status='running',
+        progress=65,
+        currentStep='Generating story architecture',
+        createdAt=now,
+        updatedAt=now,
+        attemptCount=1,
+    )
+    api.checkpoint_job(interrupted)
+    api.jobs.clear()
+    scheduled: list[UUID] = []
+
+    def record_task(coroutine):
+        scheduled.append(coroutine.cr_frame.f_locals['job_id'])
+        coroutine.close()
+
+    monkeypatch.setattr(api.asyncio, 'create_task', record_task)
+    asyncio.run(api.restore_jobs())
+
+    restored = api.jobs[UUID(RUN_ID)]
+    assert restored.status == 'queued'
+    assert restored.currentStep == 'Recovery queued after runtime restart'
+    assert restored.attemptCount == 1
+    assert scheduled == [UUID(RUN_ID)]
+
+
+def test_failed_runtime_job_can_be_retried_from_a_persistent_checkpoint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    api.jobs.clear()
+    monkeypatch.setattr(api.engine, '_settings', RuntimeSettings(
+        storage_root=tmp_path,
+        shared_secret='test-runtime-secret',
+        api_key='test-key',
+        base_url='https://example.test/v1',
+        model='test-model',
+        interface_format='OpenAI',
+        temperature=0.7,
+        max_tokens=100,
+        timeout_seconds=10,
+    ))
+    now = api.utc_now()
+    failed = api.GenerationJob(
+        id=RUN_ID,
+        ownerId=OWNER_ID,
+        project=api.ProjectSummary(**make_request().project.model_dump()),
+        status='failed',
+        progress=100,
+        currentStep='Generation failed',
+        error='temporary failure',
+        createdAt=now,
+        updatedAt=now,
+        attemptCount=1,
+    )
+    api.checkpoint_job(failed)
+    api.jobs.clear()
+    scheduled: list[UUID] = []
+
+    def record_task(coroutine):
+        scheduled.append(coroutine.cr_frame.f_locals['job_id'])
+        coroutine.close()
+
+    monkeypatch.setattr(api.asyncio, 'create_task', record_task)
+    retried = asyncio.run(api.retry_generation_job(UUID(RUN_ID), UUID(OWNER_ID), None))
+
+    assert retried.status == 'queued'
+    assert retried.error is None
+    assert scheduled == [UUID(RUN_ID)]
+
+
 def test_chapter_draft_job_preserves_confirmed_inputs_and_uses_draft_engine(
     monkeypatch,
     tmp_path: Path,

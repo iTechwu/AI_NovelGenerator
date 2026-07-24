@@ -27,6 +27,43 @@ const InternalCreateChapterDraftJobSchema = InternalCreateJobSchema.extend({
   prompt: z.string().max(2_000),
 });
 
+const InternalFinalizationTaskSchema = z.object({
+  taskId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  revisionId: z.string().uuid(),
+  chapterNumber: z.number().int().positive(),
+  type: z.enum(['summary', 'index']),
+  content: z.string().min(1).max(200_000),
+});
+
+const InternalFinalizationTaskResultSchema = z.object({
+  type: z.enum(['summary', 'index']),
+  revisionId: z.string().uuid(),
+  chapterNumber: z.number().int().positive(),
+  summary: z.string().optional(),
+  contentChecksum: z.string().length(64).optional(),
+  characterCount: z.number().int().nonnegative().optional(),
+});
+
+const InternalHardFactReviewSchema = z.object({
+  content: z.string().min(1).max(200_000),
+  facts: z.array(z.object({
+    id: z.string().uuid(),
+    subject: z.string().min(1),
+    predicate: z.string().min(1),
+    value: z.string().min(1),
+  })),
+});
+
+const InternalHardFactReviewFindingSchema = z.object({
+  factId: z.string().uuid(),
+  ruleId: z.literal('hard-fact-negation'),
+  evidenceStart: z.number().int().nonnegative(),
+  evidenceEnd: z.number().int().nonnegative(),
+  evidence: z.string(),
+  suggestedAction: z.string(),
+});
+
 @Injectable()
 export class NovelRuntimeClient {
   private readonly baseUrl: string;
@@ -62,6 +99,31 @@ export class NovelRuntimeClient {
       undefined,
       GenerationJobSchema,
       { owner_id: ownerId },
+    );
+  }
+
+  async retryJob(ownerId: string, jobId: string): Promise<GenerationJob> {
+    return this.request(
+      'post',
+      `/v1/generation-jobs/${jobId}/retry`,
+      undefined,
+      GenerationJobSchema,
+      { owner_id: ownerId },
+    );
+  }
+
+  async executeFinalizationTask(input: z.input<typeof InternalFinalizationTaskSchema>) {
+    const body = InternalFinalizationTaskSchema.parse(input);
+    return this.request('post', '/v1/finalization-tasks', body, InternalFinalizationTaskResultSchema);
+  }
+
+  async reviewHardFacts(input: z.input<typeof InternalHardFactReviewSchema>) {
+    const body = InternalHardFactReviewSchema.parse(input);
+    return this.request(
+      'post',
+      '/v1/reviews/hard-facts',
+      body,
+      z.array(InternalHardFactReviewFindingSchema),
     );
   }
 

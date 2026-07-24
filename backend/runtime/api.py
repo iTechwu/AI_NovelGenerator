@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
+import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -86,16 +89,108 @@ class GenerationJob(BaseModel):
     status: Literal['queued', 'running', 'succeeded', 'failed']
     progress: int = Field(ge=0, le=100)
     currentStep: str
+    attemptCount: int = Field(default=0, ge=0)
     artifact: dict[str, Any] | None = None
     error: str | None = None
     createdAt: datetime
     updatedAt: datetime
 
 
+class FinalizationTaskRequest(BaseModel):
+    taskId: UUID
+    projectId: UUID
+    revisionId: UUID
+    chapterNumber: int = Field(ge=1)
+    type: Literal['summary', 'index']
+    content: str = Field(min_length=1, max_length=200_000)
+
+
+class FinalizationTaskResult(BaseModel):
+    type: Literal['summary', 'index']
+    revisionId: UUID
+    chapterNumber: int
+    summary: str | None = None
+    contentChecksum: str | None = None
+    characterCount: int | None = None
+
+
+class HardFactReviewFact(BaseModel):
+    id: UUID
+    subject: str = Field(min_length=1)
+    predicate: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+
+
+class HardFactReviewRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=200_000)
+    facts: list[HardFactReviewFact] = Field(default_factory=list)
+
+
+class HardFactReviewFinding(BaseModel):
+    factId: UUID
+    ruleId: Literal['hard-fact-negation']
+    evidenceStart: int = Field(ge=0)
+    evidenceEnd: int = Field(ge=0)
+    evidence: str
+    suggestedAction: str
+
+
 settings = RuntimeSettings.from_environment()
 engine = GenerationEngine(settings)
 jobs: dict[UUID, GenerationJob] = {}
-app = FastAPI(title='Hanlin Novel Runtime', docs_url=None, redoc_url=None)
+
+
+def checkpoint_job(job: GenerationJob) -> None:
+    engine.write_checkpoint(
+        job.project.id,
+        job.id,
+        status=job.status,
+        progress=job.progress,
+        current_step=job.currentStep,
+        error=job.error,
+        job=job.model_dump(mode='json'),
+    )
+
+
+def load_job_from_checkpoint(job_id: UUID) -> GenerationJob | None:
+    for checkpoint_path in engine.checkpoint_paths():
+        try:
+            payload = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+            if payload.get('runId') != str(job_id) or not isinstance(payload.get('job'), dict):
+                continue
+            return GenerationJob.model_validate(payload['job'])
+        except (OSError, json.JSONDecodeError, ValueError):
+            logger.warning('Ignoring unreadable runtime checkpoint', extra={'checkpoint': str(checkpoint_path)})
+    return None
+
+
+async def restore_jobs() -> None:
+    for checkpoint_path in engine.checkpoint_paths():
+        try:
+            payload = json.loads(checkpoint_path.read_text(encoding='utf-8'))
+            job_payload = payload.get('job')
+            if not isinstance(job_payload, dict):
+                continue
+            job = GenerationJob.model_validate(job_payload)
+        except (OSError, json.JSONDecodeError, ValueError):
+            logger.warning('Ignoring unreadable runtime checkpoint', extra={'checkpoint': str(checkpoint_path)})
+            continue
+        jobs[job.id] = job
+        if job.status in {'queued', 'running'}:
+            job.status = 'queued'
+            job.currentStep = 'Recovery queued after runtime restart'
+            job.updatedAt = utc_now()
+            checkpoint_job(job)
+            asyncio.create_task(run_job(job.id))
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await restore_jobs()
+    yield
+
+
+app = FastAPI(title='Hanlin Novel Runtime', docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def require_internal_access(x_runtime_secret: str = Header(default='')) -> None:
@@ -106,10 +201,11 @@ def require_internal_access(x_runtime_secret: str = Header(default='')) -> None:
 async def run_job(job_id: UUID) -> None:
     job = jobs[job_id]
     job.status = 'running'
+    job.attemptCount += 1
     job.progress = 10
     job.currentStep = 'Preparing project workspace'
     job.updatedAt = utc_now()
-    write_checkpoint(job)
+    checkpoint_job(job)
 
     try:
         if job.kind == 'chapter_draft':
@@ -143,25 +239,14 @@ async def run_job(job_id: UUID) -> None:
         job.error = 'The generation service could not complete this request.'
     finally:
         job.updatedAt = utc_now()
-        write_checkpoint(job)
+        checkpoint_job(job)
 
 
 def update_job(job: GenerationJob, progress: int, step: str) -> None:
     job.progress = progress
     job.currentStep = step
     job.updatedAt = utc_now()
-    write_checkpoint(job)
-
-
-def write_checkpoint(job: GenerationJob) -> None:
-    engine.write_checkpoint(
-        job.project.id,
-        job.id,
-        status=job.status,
-        progress=job.progress,
-        current_step=job.currentStep,
-        error=job.error,
-    )
+    checkpoint_job(job)
 
 
 @app.get('/health')
@@ -174,7 +259,7 @@ async def create_generation_job(
     request: CreateJobRequest,
     _: None = Depends(require_internal_access),
 ) -> GenerationJob:
-    existing = jobs.get(request.jobId)
+    existing = jobs.get(request.jobId) or load_job_from_checkpoint(request.jobId)
     if existing:
         if existing.ownerId != request.ownerId or existing.project.id != request.project.id:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Generation job id conflict')
@@ -211,7 +296,7 @@ async def create_generation_job(
         'prompt': job.prompt,
         'modelConfig': job.modelConfig,
     })
-    write_checkpoint(job)
+    checkpoint_job(job)
     asyncio.create_task(run_job(job.id))
     return job
 
@@ -222,7 +307,69 @@ def get_generation_job(
     owner_id: UUID,
     _: None = Depends(require_internal_access),
 ) -> GenerationJob:
-    job = jobs.get(job_id)
+    job = jobs.get(job_id) or load_job_from_checkpoint(job_id)
     if not job or job.ownerId != owner_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Generation job not found')
+    return job
+
+
+@app.post('/v1/finalization-tasks', response_model=FinalizationTaskResult)
+async def execute_finalization_task(
+    request: FinalizationTaskRequest,
+    _: None = Depends(require_internal_access),
+) -> FinalizationTaskResult:
+    return FinalizationTaskResult.model_validate(
+        await asyncio.to_thread(
+            engine.execute_finalization_task,
+            request.projectId,
+            request.taskId,
+            request.revisionId,
+            request.chapterNumber,
+            request.type,
+            request.content,
+        ),
+    )
+
+
+@app.post('/v1/reviews/hard-facts', response_model=list[HardFactReviewFinding])
+async def review_hard_facts(
+    request: HardFactReviewRequest,
+    _: None = Depends(require_internal_access),
+) -> list[HardFactReviewFinding]:
+    findings: list[HardFactReviewFinding] = []
+    for fact in request.facts:
+        pattern = re.compile(
+            rf'{re.escape(fact.subject)}[^。！？!?]{{0,80}}(?:不是|并非|没有|未曾)[^。！？!?]{{0,40}}{re.escape(fact.value)}'
+        )
+        for match in pattern.finditer(request.content):
+            findings.append(HardFactReviewFinding(
+                factId=fact.id,
+                ruleId='hard-fact-negation',
+                evidenceStart=match.start(),
+                evidenceEnd=match.end(),
+                evidence=match.group(0),
+                suggestedAction=f'请修改正文，或为已确认事实“{fact.subject} / {fact.predicate} / {fact.value}”记录有意变更理由。',
+            ))
+    return findings
+
+
+@app.post('/v1/generation-jobs/{job_id}/retry', response_model=GenerationJob, status_code=status.HTTP_202_ACCEPTED)
+async def retry_generation_job(
+    job_id: UUID,
+    owner_id: UUID,
+    _: None = Depends(require_internal_access),
+) -> GenerationJob:
+    job = jobs.get(job_id) or load_job_from_checkpoint(job_id)
+    if not job or job.ownerId != owner_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Generation job not found')
+    if job.status not in {'failed', 'queued'}:
+        return job
+    jobs[job.id] = job
+    job.status = 'queued'
+    job.progress = 0
+    job.currentStep = 'Queued for retry'
+    job.error = None
+    job.updatedAt = utc_now()
+    checkpoint_job(job)
+    asyncio.create_task(run_job(job.id))
     return job

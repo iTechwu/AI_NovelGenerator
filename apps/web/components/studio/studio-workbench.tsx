@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookOpenText,
   Check,
@@ -10,17 +10,9 @@ import {
   LoaderCircle,
   Save,
   Sparkles,
-} from "lucide-react";
-import {
-  Badge,
-  Button,
-  Input,
-  Label,
-  Progress,
-  Skeleton,
-  Textarea,
-} from "@repo/ui";
-import { studioClient } from "@/lib/api/contracts/client";
+} from 'lucide-react';
+import { Badge, Button, Input, Label, Progress, Skeleton, Textarea } from '@repo/ui';
+import { studioClient } from '@/lib/api/contracts/client';
 import type {
   CreateStudioProject,
   GenerationJob,
@@ -33,110 +25,102 @@ import type {
   CreateStudioFactChange,
   StudioProjectListResponse,
   UpdateStudioChapterPlan,
-} from "@repo/contracts";
+} from '@repo/contracts';
 
 const initialProject: CreateStudioProject = {
-  title: "",
-  format: "novel",
-  genre: "悬疑",
-  premise: "",
+  title: '',
+  format: 'novel',
+  genre: '悬疑',
+  premise: '',
   chapterCount: 20,
   targetWordsPerChapter: 3000,
-  guidance: "",
+  guidance: '',
   generateOutline: true,
 };
 
-const terminalStatuses = new Set(["succeeded", "failed"]);
-type StudioProjectListItem = StudioProjectListResponse["list"][number];
+const terminalStatuses = new Set(['succeeded', 'failed']);
+type StudioProjectListItem = StudioProjectListResponse['list'][number];
 
 const initialChapterPlan: UpdateStudioChapterPlan = {
-  title: "",
-  goal: "",
-  conflict: "",
+  title: '',
+  goal: '',
+  conflict: '',
   characters: [],
-  location: "",
-  timeConstraint: "",
-  foreshadowing: "",
-  hook: "",
+  location: '',
+  timeConstraint: '',
+  foreshadowing: '',
+  hook: '',
 };
 
-function statusLabel(status: GenerationJob["status"]): string {
+function statusLabel(status: GenerationJob['status']): string {
   return {
-    queued: "等待执行",
-    running: "生成中",
-    succeeded: "已完成",
-    failed: "生成失败",
+    queued: '等待执行',
+    running: '生成中',
+    succeeded: '已完成',
+    failed: '生成失败',
   }[status];
 }
 
 function statusVariant(
-  status: GenerationJob["status"],
-): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "succeeded") return "default";
-  if (status === "failed") return "destructive";
-  if (status === "running") return "secondary";
-  return "outline";
+  status: GenerationJob['status'],
+): 'default' | 'secondary' | 'destructive' | 'outline' {
+  if (status === 'succeeded') return 'default';
+  if (status === 'failed') return 'destructive';
+  if (status === 'running') return 'secondary';
+  return 'outline';
 }
 
 export function StudioWorkbench() {
   const [project, setProject] = useState<CreateStudioProject>(initialProject);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [blueprint, setBlueprint] = useState<StudioBlueprint | null>(null);
-  const [chapterPlan, setChapterPlan] = useState<StudioChapterPlan | null>(
-    null,
-  );
+  const [chapterPlan, setChapterPlan] = useState<StudioChapterPlan | null>(null);
   const [chapterPlanDraft, setChapterPlanDraft] =
     useState<UpdateStudioChapterPlan>(initialChapterPlan);
   const [chapterNumber, setChapterNumber] = useState(1);
-  const [chapterRevisions, setChapterRevisions] = useState<
-    StudioChapterRevision[]
-  >([]);
-  const [currentRevisionId, setCurrentRevisionId] = useState<string | null>(
-    null,
-  );
-  const [selectedRevision, setSelectedRevision] =
-    useState<StudioChapterRevision | null>(null);
-  const [comparisonRevisionId, setComparisonRevisionId] = useState<
-    string | null
-  >(null);
-  const [revisionDiff, setRevisionDiff] =
-    useState<StudioChapterRevisionDiff | null>(null);
+  const [chapterRevisions, setChapterRevisions] = useState<StudioChapterRevision[]>([]);
+  const [currentRevisionId, setCurrentRevisionId] = useState<string | null>(null);
+  const [currentFinalRevisionId, setCurrentFinalRevisionId] = useState<string | null>(null);
+  const [selectedRevision, setSelectedRevision] = useState<StudioChapterRevision | null>(null);
+  const [revisionContent, setRevisionContent] = useState('');
+  const [revisionEditSummary, setRevisionEditSummary] = useState('');
+  const [hasUnsavedRevisionChanges, setHasUnsavedRevisionChanges] = useState(false);
+  const [revisionSaveState, setRevisionSaveState] = useState<
+    'idle' | 'saving' | 'saved' | 'failed'
+  >('idle');
+  const [revisionLastSavedAt, setRevisionLastSavedAt] = useState<Date | null>(null);
+  const [comparisonRevisionId, setComparisonRevisionId] = useState<string | null>(null);
+  const [revisionDiff, setRevisionDiff] = useState<StudioChapterRevisionDiff | null>(null);
   const [factChanges, setFactChanges] = useState<StudioFactChange[]>([]);
   const [confirmedFacts, setConfirmedFacts] = useState<StudioFact[]>([]);
-  const [factChangeDraft, setFactChangeDraft] =
-    useState<CreateStudioFactChange>({
-      operation: "add",
-      factType: "character",
-      subject: "",
-      predicate: "",
-      proposedValue: "",
-      rationale: "",
-      evidence: "",
-    });
-  const [editingFactChangeId, setEditingFactChangeId] = useState<string | null>(
-    null,
-  );
-  const [editedFactValue, setEditedFactValue] = useState("");
-  const [draftPrompt, setDraftPrompt] = useState("");
+  const [factChangeDraft, setFactChangeDraft] = useState<CreateStudioFactChange>({
+    operation: 'add',
+    factType: 'character',
+    subject: '',
+    predicate: '',
+    proposedValue: '',
+    rationale: '',
+    evidence: '',
+  });
+  const [editingFactChangeId, setEditingFactChangeId] = useState<string | null>(null);
+  const [editedFactValue, setEditedFactValue] = useState('');
+  const [draftPrompt, setDraftPrompt] = useState('');
   const [projects, setProjects] = useState<StudioProjectListItem[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
   const [openingRunId, setOpeningRunId] = useState<string | null>(null);
   const [isSavingBlueprint, setIsSavingBlueprint] = useState(false);
   const [isSavingChapterPlan, setIsSavingChapterPlan] = useState(false);
-  const [isGeneratingChapterDraft, setIsGeneratingChapterDraft] =
-    useState(false);
-  const [isRestoringChapterDraft, setIsRestoringChapterDraft] =
-    useState(false);
+  const [isGeneratingChapterDraft, setIsGeneratingChapterDraft] = useState(false);
+  const [isRestoringChapterDraft, setIsRestoringChapterDraft] = useState(false);
+  const [isFinalizingChapter, setIsFinalizingChapter] = useState(false);
   const [isSavingFactChange, setIsSavingFactChange] = useState(false);
-  const [resolvingFactChangeId, setResolvingFactChangeId] = useState<
-    string | null
-  >(null);
+  const [resolvingFactChangeId, setResolvingFactChangeId] = useState<string | null>(null);
   const factChangesRequestId = useRef(0);
-  const [isEditingConfirmedBlueprint, setIsEditingConfirmedBlueprint] =
-    useState(false);
-  const [isEditingConfirmedChapterPlan, setIsEditingConfirmedChapterPlan] =
-    useState(false);
+  const revisionSourceIdRef = useRef<string | null>(null);
+  const recentlyCreatedRevisionIdRef = useRef<string | null>(null);
+  const [isEditingConfirmedBlueprint, setIsEditingConfirmedBlueprint] = useState(false);
+  const [isEditingConfirmedChapterPlan, setIsEditingConfirmedChapterPlan] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [blueprintError, setBlueprintError] = useState<string | null>(null);
@@ -153,10 +137,10 @@ export function StudioWorkbench() {
       if (response.status === 200) {
         setProjects(response.body.data.list);
       } else {
-        setLibraryError("作品库暂时无法加载。");
+        setLibraryError('作品库暂时无法加载。');
       }
     } catch {
-      setLibraryError("作品库暂时无法加载。");
+      setLibraryError('作品库暂时无法加载。');
     } finally {
       setIsLoadingProjects(false);
     }
@@ -175,56 +159,49 @@ export function StudioWorkbench() {
       });
       if (response.status === 200) setBlueprint(response.body.data);
     } catch {
-      setBlueprintError("蓝图暂时无法加载。");
+      setBlueprintError('蓝图暂时无法加载。');
     }
   }, []);
 
   useEffect(() => {
-    if (job?.status !== "succeeded") return;
+    if (job?.status !== 'succeeded') return;
 
-    const timer = window.setTimeout(
-      () => void loadBlueprint(job.project.id),
-      0,
-    );
+    const timer = window.setTimeout(() => void loadBlueprint(job.project.id), 0);
     return () => window.clearTimeout(timer);
   }, [job, loadBlueprint]);
 
-  const loadChapterPlan = useCallback(
-    async (projectId: string, nextChapterNumber: number) => {
-      setChapterPlanError(null);
-      try {
-        const response = await studioClient.getChapterPlan({
-          params: { projectId, chapterNumber: nextChapterNumber },
+  const loadChapterPlan = useCallback(async (projectId: string, nextChapterNumber: number) => {
+    setChapterPlanError(null);
+    try {
+      const response = await studioClient.getChapterPlan({
+        params: { projectId, chapterNumber: nextChapterNumber },
+      });
+      if (response.status === 200) {
+        setChapterPlan(response.body.data);
+        setIsEditingConfirmedChapterPlan(false);
+        setChapterPlanDraft({
+          title: response.body.data.title,
+          goal: response.body.data.goal,
+          conflict: response.body.data.conflict,
+          characters: response.body.data.characters,
+          location: response.body.data.location,
+          timeConstraint: response.body.data.timeConstraint,
+          foreshadowing: response.body.data.foreshadowing,
+          hook: response.body.data.hook,
         });
-        if (response.status === 200) {
-          setChapterPlan(response.body.data);
-          setIsEditingConfirmedChapterPlan(false);
-          setChapterPlanDraft({
-            title: response.body.data.title,
-            goal: response.body.data.goal,
-            conflict: response.body.data.conflict,
-            characters: response.body.data.characters,
-            location: response.body.data.location,
-            timeConstraint: response.body.data.timeConstraint,
-            foreshadowing: response.body.data.foreshadowing,
-            hook: response.body.data.hook,
-          });
-        } else {
-          setChapterPlan(null);
-          setChapterPlanDraft(initialChapterPlan);
-          setIsEditingConfirmedChapterPlan(false);
-        }
-      } catch {
+      } else {
         setChapterPlan(null);
         setChapterPlanDraft(initialChapterPlan);
+        setIsEditingConfirmedChapterPlan(false);
       }
-    },
-    [],
-  );
+    } catch {
+      setChapterPlan(null);
+      setChapterPlanDraft(initialChapterPlan);
+    }
+  }, []);
 
   useEffect(() => {
-    if (blueprint?.status !== "confirmed" || isEditingConfirmedBlueprint)
-      return;
+    if (blueprint?.status !== 'confirmed' || isEditingConfirmedBlueprint) return;
 
     const timer = window.setTimeout(
       () => void loadChapterPlan(blueprint.projectId, chapterNumber),
@@ -233,43 +210,40 @@ export function StudioWorkbench() {
     return () => window.clearTimeout(timer);
   }, [blueprint, chapterNumber, isEditingConfirmedBlueprint, loadChapterPlan]);
 
-  const loadChapterRevisions = useCallback(
-    async (projectId: string, nextChapterNumber: number) => {
-      try {
-        const response = await studioClient.listChapterRevisions({
-          params: { projectId, chapterNumber: nextChapterNumber },
-          query: { page: 1, limit: 20 },
-        });
-        if (response.status === 200) {
-          const { list, currentRevisionId: nextCurrentRevisionId } =
-            response.body.data;
-          setChapterRevisions(list);
-          setCurrentRevisionId(nextCurrentRevisionId ?? null);
-          setSelectedRevision(
-            list.find((revision) => revision.id === nextCurrentRevisionId) ??
-              list[0] ??
-              null,
-          );
-          const selectedId =
-            list.find((revision) => revision.id === nextCurrentRevisionId)?.id ??
-            list[0]?.id;
-          setComparisonRevisionId(
-            list.find((revision) => revision.id !== selectedId)?.id ?? null,
-          );
-        }
-      } catch {
-        setChapterRevisions([]);
-        setCurrentRevisionId(null);
-        setSelectedRevision(null);
-        setComparisonRevisionId(null);
-        setRevisionDiff(null);
+  const loadChapterRevisions = useCallback(async (projectId: string, nextChapterNumber: number) => {
+    try {
+      const response = await studioClient.listChapterRevisions({
+        params: { projectId, chapterNumber: nextChapterNumber },
+        query: { page: 1, limit: 20 },
+      });
+      if (response.status === 200) {
+        const {
+          list,
+          currentRevisionId: nextCurrentRevisionId,
+          currentFinalRevisionId: nextCurrentFinalRevisionId,
+        } = response.body.data;
+        setChapterRevisions(list);
+        setCurrentRevisionId(nextCurrentRevisionId ?? null);
+        setCurrentFinalRevisionId(nextCurrentFinalRevisionId ?? null);
+        setSelectedRevision(
+          list.find((revision) => revision.id === nextCurrentRevisionId) ?? list[0] ?? null,
+        );
+        const selectedId =
+          list.find((revision) => revision.id === nextCurrentRevisionId)?.id ?? list[0]?.id;
+        setComparisonRevisionId(list.find((revision) => revision.id !== selectedId)?.id ?? null);
       }
-    },
-    [],
-  );
+    } catch {
+      setChapterRevisions([]);
+      setCurrentRevisionId(null);
+      setCurrentFinalRevisionId(null);
+      setSelectedRevision(null);
+      setComparisonRevisionId(null);
+      setRevisionDiff(null);
+    }
+  }, []);
 
   useEffect(() => {
-    if (chapterPlan?.status !== "confirmed") return;
+    if (chapterPlan?.status !== 'confirmed') return;
     const timer = window.setTimeout(
       () => void loadChapterRevisions(chapterPlan.projectId, chapterPlan.chapterNumber),
       0,
@@ -300,6 +274,30 @@ export function StudioWorkbench() {
     return () => window.clearTimeout(timer);
   }, [blueprint, chapterNumber, selectedRevision, comparisonRevisionId]);
 
+  useEffect(() => {
+    revisionSourceIdRef.current = selectedRevision?.id ?? null;
+    setRevisionContent(selectedRevision?.content ?? '');
+    setRevisionEditSummary(selectedRevision?.editSummary ?? '');
+    setFactChanges([]);
+    setHasUnsavedRevisionChanges(false);
+    if (recentlyCreatedRevisionIdRef.current === selectedRevision?.id) {
+      recentlyCreatedRevisionIdRef.current = null;
+      return;
+    }
+    setRevisionSaveState('idle');
+    setRevisionLastSavedAt(null);
+  }, [selectedRevision?.id]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedRevisionChanges) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedRevisionChanges]);
+
   const loadFactChanges = useCallback(
     async (projectId: string, chapter: number, revisionId: string) => {
       const requestId = ++factChangesRequestId.current;
@@ -308,14 +306,9 @@ export function StudioWorkbench() {
           params: { projectId, chapterNumber: chapter, revisionId },
           query: { page: 1, limit: 50 },
         });
-        if (
-          response.status === 200 &&
-          requestId === factChangesRequestId.current
-        ) {
+        if (response.status === 200 && requestId === factChangesRequestId.current) {
           setFactChanges((current) => {
-            const serverIds = new Set(
-              response.body.data.list.map((change) => change.id),
-            );
+            const serverIds = new Set(response.body.data.list.map((change) => change.id));
             return [
               ...response.body.data.list,
               ...current.filter((change) => !serverIds.has(change.id)),
@@ -356,12 +349,7 @@ export function StudioWorkbench() {
     }
     setFactChanges([]);
     const timer = window.setTimeout(
-      () =>
-        void loadFactChanges(
-          blueprint.projectId,
-          chapterNumber,
-          selectedRevision.id,
-        ),
+      () => void loadFactChanges(blueprint.projectId, chapterNumber, selectedRevision.id),
       0,
     );
     return () => window.clearTimeout(timer);
@@ -377,7 +365,7 @@ export function StudioWorkbench() {
         });
         if (response.status === 200) setJob(response.body.data);
       } catch {
-        setError("任务状态暂时无法刷新。");
+        setError('任务状态暂时无法刷新。');
       }
     }, 1800);
 
@@ -407,10 +395,10 @@ export function StudioWorkbench() {
         setJob(response.body.data);
         void loadProjects();
       } else {
-        setError("项目没有成功进入生成队列。");
+        setError('项目没有成功进入生成队列。');
       }
     } catch {
-      setError("无法创建项目。请确认已登录且创作运行时已启动。");
+      setError('无法创建项目。请确认已登录且创作运行时已启动。');
     } finally {
       setIsSubmitting(false);
     }
@@ -433,21 +421,17 @@ export function StudioWorkbench() {
       if (response.status === 200) {
         setJob(response.body.data);
       } else {
-        setError("无法打开该作品的最近任务。");
+        setError('无法打开该作品的最近任务。');
       }
     } catch {
-      setError("无法打开该作品的最近任务。");
+      setError('无法打开该作品的最近任务。');
     } finally {
       setOpeningRunId(null);
     }
   };
 
   const saveBlueprint = async () => {
-    if (
-      !blueprint ||
-      (blueprint.status === "confirmed" && !isEditingConfirmedBlueprint)
-    )
-      return;
+    if (!blueprint || (blueprint.status === 'confirmed' && !isEditingConfirmedBlueprint)) return;
 
     setIsSavingBlueprint(true);
     setBlueprintError(null);
@@ -462,16 +446,16 @@ export function StudioWorkbench() {
       if (response.status === 200) {
         setBlueprint(response.body.data);
         setIsEditingConfirmedBlueprint(false);
-      } else setBlueprintError("蓝图保存失败。");
+      } else setBlueprintError('蓝图保存失败。');
     } catch {
-      setBlueprintError("蓝图保存失败。");
+      setBlueprintError('蓝图保存失败。');
     } finally {
       setIsSavingBlueprint(false);
     }
   };
 
   const confirmBlueprint = async () => {
-    if (!blueprint || blueprint.status === "confirmed") return;
+    if (!blueprint || blueprint.status === 'confirmed') return;
 
     setIsSavingBlueprint(true);
     setBlueprintError(null);
@@ -481,16 +465,16 @@ export function StudioWorkbench() {
         body: {},
       });
       if (response.status === 200) setBlueprint(response.body.data);
-      else setBlueprintError("蓝图确认失败。");
+      else setBlueprintError('蓝图确认失败。');
     } catch {
-      setBlueprintError("蓝图确认失败。");
+      setBlueprintError('蓝图确认失败。');
     } finally {
       setIsSavingBlueprint(false);
     }
   };
 
   const saveChapterPlan = async () => {
-    if (!blueprint || blueprint.status !== "confirmed") return;
+    if (!blueprint || blueprint.status !== 'confirmed') return;
 
     setIsSavingChapterPlan(true);
     setChapterPlanError(null);
@@ -503,18 +487,17 @@ export function StudioWorkbench() {
         setChapterPlan(response.body.data);
         setIsEditingConfirmedChapterPlan(false);
       } else {
-        setChapterPlanError("章节计划保存失败。");
+        setChapterPlanError('章节计划保存失败。');
       }
     } catch {
-      setChapterPlanError("章节计划保存失败。");
+      setChapterPlanError('章节计划保存失败。');
     } finally {
       setIsSavingChapterPlan(false);
     }
   };
 
   const confirmChapterPlan = async () => {
-    if (!blueprint || !chapterPlan || chapterPlan.status === "confirmed")
-      return;
+    if (!blueprint || !chapterPlan || chapterPlan.status === 'confirmed') return;
 
     setIsSavingChapterPlan(true);
     setChapterPlanError(null);
@@ -526,18 +509,17 @@ export function StudioWorkbench() {
       if (response.status === 200) {
         setChapterPlan(response.body.data);
       } else {
-        setChapterPlanError("章节计划确认失败。");
+        setChapterPlanError('章节计划确认失败。');
       }
     } catch {
-      setChapterPlanError("章节计划确认失败。");
+      setChapterPlanError('章节计划确认失败。');
     } finally {
       setIsSavingChapterPlan(false);
     }
   };
 
   const createChapterDraft = async () => {
-    if (!blueprint || !chapterPlan || chapterPlan.status !== "confirmed")
-      return;
+    if (!blueprint || !chapterPlan || chapterPlan.status !== 'confirmed') return;
 
     setIsGeneratingChapterDraft(true);
     setChapterPlanError(null);
@@ -551,10 +533,10 @@ export function StudioWorkbench() {
         setJob(response.body.data);
         void loadProjects();
       } else {
-        setChapterPlanError("章节草稿没有成功进入生成队列。");
+        setChapterPlanError('章节草稿没有成功进入生成队列。');
       }
     } catch {
-      setChapterPlanError("无法生成章节草稿。请确认创作运行时已启动。");
+      setChapterPlanError('无法生成章节草稿。请确认创作运行时已启动。');
     } finally {
       setIsGeneratingChapterDraft(false);
     }
@@ -577,12 +559,132 @@ export function StudioWorkbench() {
         setCurrentRevisionId(response.body.data.id);
         setSelectedRevision(response.body.data);
       } else {
-        setChapterPlanError("恢复章节草稿失败。");
+        setChapterPlanError('恢复章节草稿失败。');
       }
     } catch {
-      setChapterPlanError("恢复章节草稿失败。");
+      setChapterPlanError('恢复章节草稿失败。');
     } finally {
       setIsRestoringChapterDraft(false);
+    }
+  };
+
+  const canEditSelectedRevision = Boolean(
+    selectedRevision &&
+    selectedRevision.id === currentRevisionId &&
+    selectedRevision.status !== 'superseded',
+  );
+
+  const saveAuthorRevision = useCallback(async () => {
+    if (
+      !blueprint ||
+      !canEditSelectedRevision ||
+      !hasUnsavedRevisionChanges ||
+      revisionSaveState === 'saving' ||
+      !revisionContent.trim()
+    ) {
+      return;
+    }
+    const sourceRevisionId = revisionSourceIdRef.current;
+    if (!sourceRevisionId) return;
+
+    const content = revisionContent;
+    const editSummary = revisionEditSummary;
+    setRevisionSaveState('saving');
+    setChapterPlanError(null);
+    try {
+      const response = await studioClient.createAuthorChapterRevision({
+        params: {
+          projectId: blueprint.projectId,
+          chapterNumber,
+          revisionId: sourceRevisionId,
+        },
+        body: { content, editSummary },
+      });
+      if (response.status !== 201) {
+        setRevisionSaveState('failed');
+        return;
+      }
+      const revision = response.body.data;
+      revisionSourceIdRef.current = revision.id;
+      recentlyCreatedRevisionIdRef.current = revision.id;
+      setChapterRevisions((current) => [
+        revision,
+        ...current.filter((item) => item.id !== revision.id),
+      ]);
+      setCurrentRevisionId(revision.id);
+      setSelectedRevision(revision);
+      setHasUnsavedRevisionChanges(false);
+      setRevisionSaveState('saved');
+      setRevisionLastSavedAt(new Date());
+    } catch {
+      setRevisionSaveState('failed');
+    }
+  }, [
+    blueprint,
+    canEditSelectedRevision,
+    chapterNumber,
+    hasUnsavedRevisionChanges,
+    revisionContent,
+    revisionEditSummary,
+    revisionSaveState,
+  ]);
+
+  useEffect(() => {
+    if (
+      !canEditSelectedRevision ||
+      !hasUnsavedRevisionChanges ||
+      revisionSaveState === 'saving' ||
+      !revisionContent.trim()
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => void saveAuthorRevision(), 750);
+    return () => window.clearTimeout(timer);
+  }, [
+    canEditSelectedRevision,
+    hasUnsavedRevisionChanges,
+    revisionContent,
+    revisionEditSummary,
+    revisionSaveState,
+    saveAuthorRevision,
+  ]);
+
+  const finalizeChapterDraft = async () => {
+    if (!blueprint || !selectedRevision) return;
+    setIsFinalizingChapter(true);
+    setChapterPlanError(null);
+    try {
+      const response = await studioClient.finalizeChapterRevision({
+        params: {
+          projectId: blueprint.projectId,
+          chapterNumber,
+          revisionId: selectedRevision.id,
+        },
+        body: {},
+      });
+      if (response.status === 201) {
+        setCurrentFinalRevisionId(response.body.data.revisionId);
+        setChapterRevisions((current) =>
+          current.map((revision) => ({
+            ...revision,
+            status:
+              revision.id === response.body.data.revisionId
+                ? 'finalized'
+                : revision.id === currentFinalRevisionId
+                  ? 'superseded'
+                  : revision.status,
+          })),
+        );
+        setSelectedRevision((current) =>
+          current?.id === response.body.data.revisionId
+            ? { ...current, status: 'finalized' }
+            : current,
+        );
+      } else setChapterPlanError('章节定稿失败。请稍后重试。');
+    } catch {
+      setChapterPlanError('章节定稿失败。请先裁决全部事实建议并确认当前草稿。');
+    } finally {
+      setIsFinalizingChapter(false);
     }
   };
 
@@ -603,15 +705,15 @@ export function StudioWorkbench() {
         setFactChanges((current) => [response.body.data, ...current]);
         setFactChangeDraft((current) => ({
           ...current,
-          subject: "",
-          predicate: "",
-          proposedValue: "",
-          rationale: "",
-          evidence: "",
+          subject: '',
+          predicate: '',
+          proposedValue: '',
+          rationale: '',
+          evidence: '',
         }));
-      } else setChapterPlanError("事实建议保存失败。");
+      } else setChapterPlanError('事实建议保存失败。');
     } catch {
-      setChapterPlanError("事实建议保存失败。");
+      setChapterPlanError('事实建议保存失败。');
     } finally {
       setIsSavingFactChange(false);
     }
@@ -619,7 +721,7 @@ export function StudioWorkbench() {
 
   const resolveFactChange = async (
     change: StudioFactChange,
-    decision: "accept" | "edit" | "reject",
+    decision: 'accept' | 'edit' | 'reject',
   ) => {
     if (!blueprint || !selectedRevision) return;
     setResolvingFactChangeId(change.id);
@@ -633,25 +735,36 @@ export function StudioWorkbench() {
         },
         body: {
           decision,
-          ...(decision === "edit" ? { resolvedValue: editedFactValue } : {}),
+          ...(decision === 'edit' ? { resolvedValue: editedFactValue } : {}),
         },
       });
       if (response.status === 200) {
         setFactChanges((current) =>
-          current.map((item) =>
-            item.id === change.id ? response.body.data : item,
-          ),
+          current.map((item) => (item.id === change.id ? response.body.data : item)),
         );
         setEditingFactChangeId(null);
-        setEditedFactValue("");
+        setEditedFactValue('');
         void loadConfirmedFacts(blueprint.projectId);
-      } else setChapterPlanError("事实建议裁决失败。");
+      } else setChapterPlanError('事实建议裁决失败。');
     } catch {
-      setChapterPlanError("事实建议裁决失败。");
+      setChapterPlanError('事实建议裁决失败。');
     } finally {
       setResolvingFactChangeId(null);
     }
   };
+
+  const pendingFactChanges = factChanges.some((change) => change.status === 'proposed');
+  const finalizationBlockedReason = !selectedRevision
+    ? '请选择一个章节草稿。'
+    : selectedRevision.status === 'finalized'
+      ? '该版本已定稿；摘要和检索任务会在后台继续处理。'
+      : selectedRevision.status === 'superseded'
+        ? '已被替代的版本不能定稿。'
+        : selectedRevision.id !== currentRevisionId
+          ? '请先将此版本恢复为当前草稿。'
+          : pendingFactChanges
+            ? '请先裁决全部事实建议。'
+            : '定稿会锁定此版本并创建摘要、检索任务。';
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-5 py-8 md:px-8">
@@ -666,17 +779,10 @@ export function StudioWorkbench() {
             查看已有作品与生成状态，或创建一个新故事。所有生成任务由后台运行时执行。
           </p>
         </div>
-        {job && (
-          <Badge variant={statusVariant(job.status)}>
-            {statusLabel(job.status)}
-          </Badge>
-        )}
+        {job && <Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>}
       </header>
 
-      <section
-        className="grid gap-4 border-b pb-7"
-        aria-labelledby="project-library-heading"
-      >
+      <section className="grid gap-4 border-b pb-7" aria-labelledby="project-library-heading">
         <div className="flex items-center gap-2">
           <FolderOpen className="size-4 text-primary" />
           <h2 id="project-library-heading" className="text-base font-semibold">
@@ -697,12 +803,7 @@ export function StudioWorkbench() {
             role="alert"
           >
             <span>{libraryError}</span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void loadProjects()}
-            >
+            <Button type="button" variant="outline" size="sm" onClick={() => void loadProjects()}>
               重试
             </Button>
           </div>
@@ -726,19 +827,12 @@ export function StudioWorkbench() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="truncate font-medium">{item.title}</p>
-                      <Badge
-                        variant={
-                          latestRun
-                            ? statusVariant(latestRun.status)
-                            : "outline"
-                        }
-                      >
-                        {latestRun ? statusLabel(latestRun.status) : "未生成"}
+                      <Badge variant={latestRun ? statusVariant(latestRun.status) : 'outline'}>
+                        {latestRun ? statusLabel(latestRun.status) : '未生成'}
                       </Badge>
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {item.genre} · {item.chapterCount} 章 · 每章{" "}
-                      {item.targetWordsPerChapter} 字
+                      {item.genre} · {item.chapterCount} 章 · 每章 {item.targetWordsPerChapter} 字
                     </p>
                     {latestRun && (
                       <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
@@ -748,9 +842,7 @@ export function StudioWorkbench() {
                           aria-label={`${item.title} 生成进度`}
                         />
                         <span>{latestRun.progress}%</span>
-                        <span className="truncate">
-                          {latestRun.currentStep}
-                        </span>
+                        <span className="truncate">{latestRun.currentStep}</span>
                       </div>
                     )}
                   </div>
@@ -787,7 +879,7 @@ export function StudioWorkbench() {
               <Input
                 id="title"
                 value={project.title}
-                onChange={(event) => updateProject("title", event.target.value)}
+                onChange={(event) => updateProject('title', event.target.value)}
                 placeholder="例如：雾港来信"
                 maxLength={120}
                 required
@@ -800,10 +892,7 @@ export function StudioWorkbench() {
                   id="format"
                   value={project.format}
                   onChange={(event) =>
-                    updateProject(
-                      "format",
-                      event.target.value as CreateStudioProject["format"],
-                    )
+                    updateProject('format', event.target.value as CreateStudioProject['format'])
                   }
                   className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
@@ -816,9 +905,7 @@ export function StudioWorkbench() {
                 <Input
                   id="genre"
                   value={project.genre}
-                  onChange={(event) =>
-                    updateProject("genre", event.target.value)
-                  }
+                  onChange={(event) => updateProject('genre', event.target.value)}
                   placeholder="悬疑、科幻、言情"
                   maxLength={80}
                   required
@@ -832,9 +919,7 @@ export function StudioWorkbench() {
                   min={1}
                   max={500}
                   value={project.chapterCount}
-                  onChange={(event) =>
-                    updateProject("chapterCount", Number(event.target.value))
-                  }
+                  onChange={(event) => updateProject('chapterCount', Number(event.target.value))}
                   required
                 />
               </div>
@@ -844,9 +929,7 @@ export function StudioWorkbench() {
               <Textarea
                 id="premise"
                 value={project.premise}
-                onChange={(event) =>
-                  updateProject("premise", event.target.value)
-                }
+                onChange={(event) => updateProject('premise', event.target.value)}
                 placeholder="描述主角、冲突、世界背景和你希望故事抵达的结局。"
                 className="min-h-36 resize-y"
                 maxLength={4000}
@@ -873,10 +956,7 @@ export function StudioWorkbench() {
                   max={20000}
                   value={project.targetWordsPerChapter}
                   onChange={(event) =>
-                    updateProject(
-                      "targetWordsPerChapter",
-                      Number(event.target.value),
-                    )
+                    updateProject('targetWordsPerChapter', Number(event.target.value))
                   }
                   required
                 />
@@ -885,9 +965,7 @@ export function StudioWorkbench() {
                 <input
                   type="checkbox"
                   checked={project.generateOutline}
-                  onChange={(event) =>
-                    updateProject("generateOutline", event.target.checked)
-                  }
+                  onChange={(event) => updateProject('generateOutline', event.target.checked)}
                   className="size-4 accent-primary"
                 />
                 同时生成章节蓝图
@@ -898,9 +976,7 @@ export function StudioWorkbench() {
               <Textarea
                 id="guidance"
                 value={project.guidance}
-                onChange={(event) =>
-                  updateProject("guidance", event.target.value)
-                }
+                onChange={(event) => updateProject('guidance', event.target.value)}
                 placeholder="例如：保持冷峻克制的叙述，感情线缓慢推进，避免超自然设定。"
                 className="min-h-24 resize-y"
                 maxLength={2000}
@@ -909,10 +985,7 @@ export function StudioWorkbench() {
           </section>
 
           {error && (
-            <div
-              className="flex items-start gap-2 text-sm text-destructive"
-              role="alert"
-            >
+            <div className="flex items-start gap-2 text-sm text-destructive" role="alert">
               <CircleAlert className="mt-0.5 size-4 shrink-0" />
               <span>{error}</span>
             </div>
@@ -920,19 +993,14 @@ export function StudioWorkbench() {
           <div className="flex justify-end">
             <Button
               type="submit"
-              disabled={
-                isSubmitting ||
-                Boolean(job && !terminalStatuses.has(job.status))
-              }
+              disabled={isSubmitting || Boolean(job && !terminalStatuses.has(job.status))}
             >
-              {isSubmitting || job?.status === "running" ? (
+              {isSubmitting || job?.status === 'running' ? (
                 <LoaderCircle className="animate-spin" />
               ) : (
                 <Sparkles />
               )}
-              {job && !terminalStatuses.has(job.status)
-                ? "正在生成"
-                : "生成故事架构"}
+              {job && !terminalStatuses.has(job.status) ? '正在生成' : '生成故事架构'}
             </Button>
           </div>
         </form>
@@ -942,32 +1010,21 @@ export function StudioWorkbench() {
             <div>
               <p className="text-sm font-semibold">运行状态</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                {job
-                  ? job.currentStep
-                  : "填写故事设定后，生成任务会出现在这里。"}
+                {job ? job.currentStep : '填写故事设定后，生成任务会出现在这里。'}
               </p>
             </div>
 
             {blueprint && (
-              <section
-                className="grid gap-4 border-t pt-5"
-                aria-labelledby="blueprint-heading"
-              >
+              <section className="grid gap-4 border-t pt-5" aria-labelledby="blueprint-heading">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p id="blueprint-heading" className="text-sm font-semibold">
                       创作蓝图
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      版本 {blueprint.version}
-                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">版本 {blueprint.version}</p>
                   </div>
-                  <Badge
-                    variant={
-                      blueprint.status === "confirmed" ? "default" : "secondary"
-                    }
-                  >
-                    {blueprint.status === "confirmed" ? "已确认" : "待确认"}
+                  <Badge variant={blueprint.status === 'confirmed' ? 'default' : 'secondary'}>
+                    {blueprint.status === 'confirmed' ? '已确认' : '待确认'}
                   </Badge>
                 </div>
 
@@ -977,15 +1034,12 @@ export function StudioWorkbench() {
                     id="blueprint-architecture"
                     value={blueprint.architecture}
                     disabled={
-                      (blueprint.status === "confirmed" &&
-                        !isEditingConfirmedBlueprint) ||
+                      (blueprint.status === 'confirmed' && !isEditingConfirmedBlueprint) ||
                       isSavingBlueprint
                     }
                     onChange={(event) =>
                       setBlueprint((current) =>
-                        current
-                          ? { ...current, architecture: event.target.value }
-                          : current,
+                        current ? { ...current, architecture: event.target.value } : current,
                       )
                     }
                     className="min-h-36 resize-y"
@@ -998,40 +1052,33 @@ export function StudioWorkbench() {
                     id="blueprint-outline"
                     value={blueprint.outline}
                     disabled={
-                      (blueprint.status === "confirmed" &&
-                        !isEditingConfirmedBlueprint) ||
+                      (blueprint.status === 'confirmed' && !isEditingConfirmedBlueprint) ||
                       isSavingBlueprint
                     }
                     onChange={(event) =>
                       setBlueprint((current) =>
-                        current
-                          ? { ...current, outline: event.target.value }
-                          : current,
+                        current ? { ...current, outline: event.target.value } : current,
                       )
                     }
                     className="min-h-28 resize-y"
                   />
                 </div>
 
-                {blueprintError && (
-                  <p className="text-sm text-destructive">{blueprintError}</p>
+                {blueprintError && <p className="text-sm text-destructive">{blueprintError}</p>}
+
+                {blueprint.status === 'confirmed' && !isEditingConfirmedBlueprint && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsEditingConfirmedBlueprint(true)}
+                  >
+                    <FileText />
+                    创建修订版
+                  </Button>
                 )}
 
-                {blueprint.status === "confirmed" &&
-                  !isEditingConfirmedBlueprint && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setIsEditingConfirmedBlueprint(true)}
-                    >
-                      <FileText />
-                      创建修订版
-                    </Button>
-                  )}
-
-                {(blueprint.status === "draft" ||
-                  isEditingConfirmedBlueprint) && (
+                {(blueprint.status === 'draft' || isEditingConfirmedBlueprint) && (
                   <div className="flex flex-wrap gap-2">
                     <Button
                       type="button"
@@ -1040,11 +1087,7 @@ export function StudioWorkbench() {
                       onClick={() => void saveBlueprint()}
                       disabled={isSavingBlueprint}
                     >
-                      {isSavingBlueprint ? (
-                        <LoaderCircle className="animate-spin" />
-                      ) : (
-                        <Save />
-                      )}
+                      {isSavingBlueprint ? <LoaderCircle className="animate-spin" /> : <Save />}
                       保存蓝图
                     </Button>
                     <Button
@@ -1061,313 +1104,277 @@ export function StudioWorkbench() {
               </section>
             )}
 
-            {blueprint?.status === "confirmed" &&
-              !isEditingConfirmedBlueprint && (
-                <section
-                  className="grid gap-4 border-t pt-5"
-                  aria-labelledby="chapter-plan-heading"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p
-                        id="chapter-plan-heading"
-                        className="text-sm font-semibold"
-                      >
-                        章节计划
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        草稿生成前必须确认
-                      </p>
-                    </div>
-                    {chapterPlan && (
-                      <Badge
-                        variant={
-                          chapterPlan.status === "confirmed"
-                            ? "default"
-                            : "secondary"
-                        }
-                      >
-                        {chapterPlan.status === "confirmed"
-                          ? "已确认"
-                          : "待确认"}
-                      </Badge>
-                    )}
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="chapter-number">章节</Label>
-                    <Input
-                      id="chapter-number"
-                      type="number"
-                      min={1}
-                      max={project.chapterCount}
-                      value={chapterNumber}
-                      onChange={(event) =>
-                        setChapterNumber(Number(event.target.value) || 1)
-                      }
-                      disabled={isSavingChapterPlan}
-                    />
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="chapter-title">章节标题</Label>
-                    <Input
-                      id="chapter-title"
-                      value={chapterPlanDraft.title}
-                      disabled={
-                        (chapterPlan?.status === "confirmed" &&
-                          !isEditingConfirmedChapterPlan) ||
-                        isSavingChapterPlan
-                      }
-                      onChange={(event) =>
-                        setChapterPlanDraft((current) => ({
-                          ...current,
-                          title: event.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="chapter-goal">本章目标</Label>
-                    <Textarea
-                      id="chapter-goal"
-                      value={chapterPlanDraft.goal}
-                      disabled={
-                        (chapterPlan?.status === "confirmed" &&
-                          !isEditingConfirmedChapterPlan) ||
-                        isSavingChapterPlan
-                      }
-                      onChange={(event) =>
-                        setChapterPlanDraft((current) => ({
-                          ...current,
-                          goal: event.target.value,
-                        }))
-                      }
-                      className="min-h-24 resize-y"
-                    />
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="chapter-conflict">核心冲突</Label>
-                    <Textarea
-                      id="chapter-conflict"
-                      value={chapterPlanDraft.conflict}
-                      disabled={
-                        (chapterPlan?.status === "confirmed" &&
-                          !isEditingConfirmedChapterPlan) ||
-                        isSavingChapterPlan
-                      }
-                      onChange={(event) =>
-                        setChapterPlanDraft((current) => ({
-                          ...current,
-                          conflict: event.target.value,
-                        }))
-                      }
-                      className="min-h-20 resize-y"
-                    />
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="chapter-characters">出场人物</Label>
-                    <Input
-                      id="chapter-characters"
-                      value={chapterPlanDraft.characters.join("，")}
-                      disabled={
-                        (chapterPlan?.status === "confirmed" &&
-                          !isEditingConfirmedChapterPlan) ||
-                        isSavingChapterPlan
-                      }
-                      onChange={(event) =>
-                        setChapterPlanDraft((current) => ({
-                          ...current,
-                          characters: event.target.value
-                            .split(/[，,]/)
-                            .map((value) => value.trim())
-                            .filter(Boolean),
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <div className="grid gap-2">
-                      <Label htmlFor="chapter-location">地点</Label>
-                      <Input
-                        id="chapter-location"
-                        value={chapterPlanDraft.location}
-                        disabled={
-                          (chapterPlan?.status === "confirmed" &&
-                            !isEditingConfirmedChapterPlan) ||
-                          isSavingChapterPlan
-                        }
-                        onChange={(event) =>
-                          setChapterPlanDraft((current) => ({
-                            ...current,
-                            location: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="chapter-time">时间约束</Label>
-                      <Input
-                        id="chapter-time"
-                        value={chapterPlanDraft.timeConstraint}
-                        disabled={
-                          (chapterPlan?.status === "confirmed" &&
-                            !isEditingConfirmedChapterPlan) ||
-                          isSavingChapterPlan
-                        }
-                        onChange={(event) =>
-                          setChapterPlanDraft((current) => ({
-                            ...current,
-                            timeConstraint: event.target.value,
-                          }))
-                        }
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid gap-2">
-                    <Label htmlFor="chapter-hook">章节钩子</Label>
-                    <Textarea
-                      id="chapter-hook"
-                      value={chapterPlanDraft.hook}
-                      disabled={
-                        (chapterPlan?.status === "confirmed" &&
-                          !isEditingConfirmedChapterPlan) ||
-                        isSavingChapterPlan
-                      }
-                      onChange={(event) =>
-                        setChapterPlanDraft((current) => ({
-                          ...current,
-                          hook: event.target.value,
-                        }))
-                      }
-                      className="min-h-20 resize-y"
-                    />
-                  </div>
-
-                  {chapterPlanError && (
-                    <p className="text-sm text-destructive">
-                      {chapterPlanError}
+            {blueprint?.status === 'confirmed' && !isEditingConfirmedBlueprint && (
+              <section className="grid gap-4 border-t pt-5" aria-labelledby="chapter-plan-heading">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p id="chapter-plan-heading" className="text-sm font-semibold">
+                      章节计划
                     </p>
+                    <p className="mt-1 text-xs text-muted-foreground">草稿生成前必须确认</p>
+                  </div>
+                  {chapterPlan && (
+                    <Badge variant={chapterPlan.status === 'confirmed' ? 'default' : 'secondary'}>
+                      {chapterPlan.status === 'confirmed' ? '已确认' : '待确认'}
+                    </Badge>
                   )}
+                </div>
 
-                  {chapterPlan?.status === "confirmed" &&
-                    !isEditingConfirmedChapterPlan && (
-                      <div className="grid gap-3">
-                        <div className="grid gap-2">
-                          <Label htmlFor="draft-prompt">本次附加要求</Label>
-                          <Textarea
-                            id="draft-prompt"
-                            value={draftPrompt}
-                            onChange={(event) => setDraftPrompt(event.target.value)}
-                            disabled={isGeneratingChapterDraft}
-                            maxLength={2000}
-                            className="min-h-20 resize-y"
-                            placeholder="例如：开场先写雨声，保持克制的心理描写。"
-                          />
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setIsEditingConfirmedChapterPlan(true)}
-                            disabled={isGeneratingChapterDraft}
-                          >
-                            <FileText />
-                            创建修订版
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => void createChapterDraft()}
-                            disabled={isGeneratingChapterDraft}
-                          >
-                            {isGeneratingChapterDraft ? (
-                              <LoaderCircle className="animate-spin" />
-                            ) : (
-                              <Sparkles />
-                            )}
-                            生成本章草稿
-                          </Button>
-                        </div>
-                      </div>
-                    )}
+                <div className="grid gap-2">
+                  <Label htmlFor="chapter-number">章节</Label>
+                  <Input
+                    id="chapter-number"
+                    type="number"
+                    min={1}
+                    max={project.chapterCount}
+                    value={chapterNumber}
+                    onChange={(event) => setChapterNumber(Number(event.target.value) || 1)}
+                    disabled={isSavingChapterPlan}
+                  />
+                </div>
 
-                  {(chapterPlan?.status !== "confirmed" ||
-                    isEditingConfirmedChapterPlan) && (
+                <div className="grid gap-2">
+                  <Label htmlFor="chapter-title">章节标题</Label>
+                  <Input
+                    id="chapter-title"
+                    value={chapterPlanDraft.title}
+                    disabled={
+                      (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                      isSavingChapterPlan
+                    }
+                    onChange={(event) =>
+                      setChapterPlanDraft((current) => ({
+                        ...current,
+                        title: event.target.value,
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="chapter-goal">本章目标</Label>
+                  <Textarea
+                    id="chapter-goal"
+                    value={chapterPlanDraft.goal}
+                    disabled={
+                      (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                      isSavingChapterPlan
+                    }
+                    onChange={(event) =>
+                      setChapterPlanDraft((current) => ({
+                        ...current,
+                        goal: event.target.value,
+                      }))
+                    }
+                    className="min-h-24 resize-y"
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="chapter-conflict">核心冲突</Label>
+                  <Textarea
+                    id="chapter-conflict"
+                    value={chapterPlanDraft.conflict}
+                    disabled={
+                      (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                      isSavingChapterPlan
+                    }
+                    onChange={(event) =>
+                      setChapterPlanDraft((current) => ({
+                        ...current,
+                        conflict: event.target.value,
+                      }))
+                    }
+                    className="min-h-20 resize-y"
+                  />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="chapter-characters">出场人物</Label>
+                  <Input
+                    id="chapter-characters"
+                    value={chapterPlanDraft.characters.join('，')}
+                    disabled={
+                      (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                      isSavingChapterPlan
+                    }
+                    onChange={(event) =>
+                      setChapterPlanDraft((current) => ({
+                        ...current,
+                        characters: event.target.value
+                          .split(/[，,]/)
+                          .map((value) => value.trim())
+                          .filter(Boolean),
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="grid gap-2">
+                    <Label htmlFor="chapter-location">地点</Label>
+                    <Input
+                      id="chapter-location"
+                      value={chapterPlanDraft.location}
+                      disabled={
+                        (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                        isSavingChapterPlan
+                      }
+                      onChange={(event) =>
+                        setChapterPlanDraft((current) => ({
+                          ...current,
+                          location: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="chapter-time">时间约束</Label>
+                    <Input
+                      id="chapter-time"
+                      value={chapterPlanDraft.timeConstraint}
+                      disabled={
+                        (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                        isSavingChapterPlan
+                      }
+                      onChange={(event) =>
+                        setChapterPlanDraft((current) => ({
+                          ...current,
+                          timeConstraint: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="chapter-hook">章节钩子</Label>
+                  <Textarea
+                    id="chapter-hook"
+                    value={chapterPlanDraft.hook}
+                    disabled={
+                      (chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan) ||
+                      isSavingChapterPlan
+                    }
+                    onChange={(event) =>
+                      setChapterPlanDraft((current) => ({
+                        ...current,
+                        hook: event.target.value,
+                      }))
+                    }
+                    className="min-h-20 resize-y"
+                  />
+                </div>
+
+                {chapterPlanError && <p className="text-sm text-destructive">{chapterPlanError}</p>}
+
+                {chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan && (
+                  <div className="grid gap-3">
+                    <div className="grid gap-2">
+                      <Label htmlFor="draft-prompt">本次附加要求</Label>
+                      <Textarea
+                        id="draft-prompt"
+                        value={draftPrompt}
+                        onChange={(event) => setDraftPrompt(event.target.value)}
+                        disabled={isGeneratingChapterDraft}
+                        maxLength={2000}
+                        className="min-h-20 resize-y"
+                        placeholder="例如：开场先写雨声，保持克制的心理描写。"
+                      />
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => void saveChapterPlan()}
-                        disabled={isSavingChapterPlan}
+                        onClick={() => setIsEditingConfirmedChapterPlan(true)}
+                        disabled={isGeneratingChapterDraft}
                       >
-                        {isSavingChapterPlan ? (
-                          <LoaderCircle className="animate-spin" />
-                        ) : (
-                          <Save />
-                        )}
-                        保存计划
+                        <FileText />
+                        创建修订版
                       </Button>
                       <Button
                         type="button"
                         size="sm"
-                        onClick={() => void confirmChapterPlan()}
-                        disabled={
-                          isSavingChapterPlan ||
-                          !chapterPlan ||
-                          chapterPlan.status === "confirmed"
-                        }
+                        onClick={() => void createChapterDraft()}
+                        disabled={isGeneratingChapterDraft}
                       >
-                        <Check />
-                        确认计划
+                        {isGeneratingChapterDraft ? (
+                          <LoaderCircle className="animate-spin" />
+                        ) : (
+                          <Sparkles />
+                        )}
+                        生成本章草稿
                       </Button>
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {chapterRevisions.length > 0 && (
-                    <div className="grid gap-3 border-t pt-4">
-                      <div>
-                        <p className="text-sm font-semibold">草稿版本</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          恢复只会切换当前草稿，不会改写历史正文。
-                        </p>
-                      </div>
-                      <div className="grid gap-2">
-                        {chapterRevisions.map((revision) => (
-                          <div
-                            key={revision.id}
-                            className="flex items-center justify-between gap-2 border px-3 py-2"
+                {(chapterPlan?.status !== 'confirmed' || isEditingConfirmedChapterPlan) && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void saveChapterPlan()}
+                      disabled={isSavingChapterPlan}
+                    >
+                      {isSavingChapterPlan ? <LoaderCircle className="animate-spin" /> : <Save />}
+                      保存计划
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void confirmChapterPlan()}
+                      disabled={
+                        isSavingChapterPlan || !chapterPlan || chapterPlan.status === 'confirmed'
+                      }
+                    >
+                      <Check />
+                      确认计划
+                    </Button>
+                  </div>
+                )}
+
+                {chapterRevisions.length > 0 && (
+                  <div className="grid gap-3 border-t pt-4">
+                    <div>
+                      <p className="text-sm font-semibold">草稿版本</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        恢复只会切换当前草稿，不会改写历史正文。
+                      </p>
+                    </div>
+                    <div className="grid gap-2">
+                      {chapterRevisions.map((revision) => (
+                        <div
+                          key={revision.id}
+                          className="flex items-center justify-between gap-2 border px-3 py-2"
+                        >
+                          <button
+                            type="button"
+                            className="min-w-0 text-left text-sm"
+                            onClick={() => {
+                              setSelectedRevision(revision);
+                              setComparisonRevisionId((current) =>
+                                current === revision.id
+                                  ? (chapterRevisions.find(
+                                      (candidate) => candidate.id !== revision.id,
+                                    )?.id ?? null)
+                                  : current,
+                              );
+                            }}
                           >
-                            <button
-                              type="button"
-                              className="min-w-0 text-left text-sm"
-                              onClick={() => {
-                                setSelectedRevision(revision);
-                                setComparisonRevisionId((current) =>
-                                  current === revision.id
-                                    ? chapterRevisions.find(
-                                        (candidate) => candidate.id !== revision.id,
-                                      )?.id ?? null
-                                    : current,
-                                );
-                              }}
-                            >
-                              <span className="font-medium">
-                                草稿 v{revision.version}
-                              </span>
-                              <span className="ml-2 text-xs text-muted-foreground">
-                                {revision.wordCount} 词
-                              </span>
-                            </button>
+                            <span className="font-medium">草稿 v{revision.version}</span>
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              {revision.wordCount} 词
+                            </span>
+                          </button>
+                          <div className="flex items-center gap-2">
+                            {currentFinalRevisionId === revision.id && (
+                              <Badge variant="default">已定稿</Badge>
+                            )}
                             {currentRevisionId === revision.id ? (
-                              <Badge variant="default">当前</Badge>
+                              <Badge variant="secondary">当前草稿</Badge>
                             ) : (
                               <Button
                                 type="button"
@@ -1380,371 +1387,419 @@ export function StudioWorkbench() {
                               </Button>
                             )}
                           </div>
-                        ))}
+                        </div>
+                      ))}
+                    </div>
+                    {selectedRevision && (
+                      <div className="grid gap-2">
+                        <Label htmlFor="selected-chapter-draft">
+                          草稿 v{selectedRevision.version} 正文
+                        </Label>
+                        <Textarea
+                          id="selected-chapter-draft"
+                          value={revisionContent}
+                          readOnly={!canEditSelectedRevision}
+                          aria-readonly={!canEditSelectedRevision}
+                          className="min-h-64 resize-y text-sm leading-6"
+                          onChange={(event) => {
+                            setRevisionContent(event.target.value);
+                            setHasUnsavedRevisionChanges(true);
+                            setRevisionSaveState('idle');
+                          }}
+                        />
+                        {canEditSelectedRevision ? (
+                          <>
+                            <Label htmlFor="chapter-revision-summary">本次编辑摘要</Label>
+                            <Input
+                              id="chapter-revision-summary"
+                              value={revisionEditSummary}
+                              maxLength={2000}
+                              onChange={(event) => {
+                                setRevisionEditSummary(event.target.value);
+                                setHasUnsavedRevisionChanges(true);
+                                setRevisionSaveState('idle');
+                              }}
+                            />
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                              {revisionSaveState === 'saving' && <span>正在保存新版本...</span>}
+                              {revisionSaveState === 'saved' && revisionLastSavedAt && (
+                                <span>已保存 {revisionLastSavedAt.toLocaleTimeString()}</span>
+                              )}
+                              {revisionSaveState === 'failed' && (
+                                <>
+                                  <span className="text-destructive">
+                                    保存失败，编辑内容仍保留在此页面。
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => void saveAuthorRevision()}
+                                  >
+                                    <Save />
+                                    重试保存
+                                  </Button>
+                                </>
+                              )}
+                              {revisionSaveState === 'idle' && hasUnsavedRevisionChanges && (
+                                <span>将在停止输入后自动保存。</span>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            请先恢复此版本为当前草稿后编辑；编辑已定稿内容会创建新的草稿版本。
+                          </p>
+                        )}
                       </div>
-                      {selectedRevision && (
-                        <div className="grid gap-2">
-                          <Label htmlFor="selected-chapter-draft">
-                            草稿 v{selectedRevision.version} 正文
-                          </Label>
-                          <Textarea
-                            id="selected-chapter-draft"
-                            value={selectedRevision.content}
-                            readOnly
-                            className="min-h-64 resize-y text-sm leading-6"
-                          />
-                        </div>
-                      )}
-                      {selectedRevision && comparisonRevisionId && (
-                        <div className="grid gap-2">
-                          <Label htmlFor="comparison-revision">
-                            与版本比较
-                          </Label>
-                          <select
-                            id="comparison-revision"
-                            value={comparisonRevisionId}
-                            onChange={(event) =>
-                              setComparisonRevisionId(event.target.value)
-                            }
-                            className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            {chapterRevisions
-                              .filter(
-                                (revision) => revision.id !== selectedRevision.id,
-                              )
-                              .map((revision) => (
-                                <option key={revision.id} value={revision.id}>
-                                  草稿 v{revision.version}
-                                </option>
-                              ))}
-                          </select>
-                        </div>
-                      )}
-                      {revisionDiff && (
-                        <div className="grid gap-2">
-                          <p className="text-sm font-semibold">版本差异</p>
-                          <pre
-                            aria-label="草稿版本差异"
-                            className="max-h-80 overflow-auto whitespace-pre-wrap border p-3 text-sm leading-6"
-                          >
-                            {revisionDiff.segments.map((segment, index) => (
-                              <span
-                                key={`${segment.type}-${index}`}
-                                className={
-                                  segment.type === "added"
-                                    ? "bg-emerald-100 text-emerald-950"
-                                    : segment.type === "removed"
-                                      ? "bg-rose-100 text-rose-950 line-through"
-                                      : undefined
-                                }
-                              >
-                                {segment.text}
-                              </span>
+                    )}
+                    {selectedRevision && comparisonRevisionId && (
+                      <div className="grid gap-2">
+                        <Label htmlFor="comparison-revision">与版本比较</Label>
+                        <select
+                          id="comparison-revision"
+                          value={comparisonRevisionId}
+                          onChange={(event) => setComparisonRevisionId(event.target.value)}
+                          className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {chapterRevisions
+                            .filter((revision) => revision.id !== selectedRevision.id)
+                            .map((revision) => (
+                              <option key={revision.id} value={revision.id}>
+                                草稿 v{revision.version}
+                              </option>
                             ))}
-                          </pre>
+                        </select>
+                      </div>
+                    )}
+                    {revisionDiff && (
+                      <div className="grid gap-2">
+                        <p className="text-sm font-semibold">版本差异</p>
+                        <pre
+                          aria-label="草稿版本差异"
+                          className="max-h-80 overflow-auto whitespace-pre-wrap border p-3 text-sm leading-6"
+                        >
+                          {revisionDiff.segments.map((segment, index) => (
+                            <span
+                              key={`${segment.type}-${index}`}
+                              className={
+                                segment.type === 'added'
+                                  ? 'bg-emerald-100 text-emerald-950'
+                                  : segment.type === 'removed'
+                                    ? 'bg-rose-100 text-rose-950 line-through'
+                                    : undefined
+                              }
+                            >
+                              {segment.text}
+                            </span>
+                          ))}
+                        </pre>
+                      </div>
+                    )}
+                    {selectedRevision && (
+                      <div className="grid gap-3 border-t pt-4">
+                        <div>
+                          <p className="text-sm font-semibold">事实建议</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            只有接受或编辑后接受的建议会写入确认事实层。
+                          </p>
                         </div>
-                      )}
-                      {selectedRevision && (
-                        <div className="grid gap-3 border-t pt-4">
-                          <div>
-                            <p className="text-sm font-semibold">事实建议</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              只有接受或编辑后接受的建议会写入确认事实层。
-                            </p>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <div className="grid gap-2">
+                            <Label htmlFor="fact-operation">变更操作</Label>
+                            <select
+                              id="fact-operation"
+                              className="h-10 w-full border bg-background px-3 text-sm"
+                              value={factChangeDraft.operation}
+                              onChange={(event) =>
+                                setFactChangeDraft((current) => ({
+                                  ...current,
+                                  operation: event.target
+                                    .value as CreateStudioFactChange['operation'],
+                                  factId: undefined,
+                                  proposedValue:
+                                    event.target.value === 'remove' ? '' : current.proposedValue,
+                                }))
+                              }
+                            >
+                              <option value="add">新增事实</option>
+                              <option value="update">更新事实</option>
+                              <option value="remove">移除事实</option>
+                            </select>
                           </div>
-                          <div className="grid gap-2 sm:grid-cols-2">
+                          {factChangeDraft.operation !== 'add' && (
                             <div className="grid gap-2">
-                              <Label htmlFor="fact-operation">变更操作</Label>
+                              <Label htmlFor="fact-target">目标确认事实</Label>
                               <select
-                                id="fact-operation"
+                                id="fact-target"
                                 className="h-10 w-full border bg-background px-3 text-sm"
-                                value={factChangeDraft.operation}
-                                onChange={(event) =>
+                                value={factChangeDraft.factId ?? ''}
+                                onChange={(event) => {
+                                  const fact = confirmedFacts.find(
+                                    (item) => item.id === event.target.value,
+                                  );
                                   setFactChangeDraft((current) => ({
                                     ...current,
-                                    operation: event.target.value as CreateStudioFactChange["operation"],
-                                    factId: undefined,
+                                    factId: fact?.id,
+                                    factType: fact?.factType ?? current.factType,
+                                    subject: fact?.subject ?? current.subject,
+                                    predicate: fact?.predicate ?? current.predicate,
                                     proposedValue:
-                                      event.target.value === "remove"
-                                        ? ""
-                                        : current.proposedValue,
-                                  }))
-                                }
+                                      current.operation === 'remove'
+                                        ? ''
+                                        : (fact?.value ?? current.proposedValue),
+                                  }));
+                                }}
                               >
-                                <option value="add">新增事实</option>
-                                <option value="update">更新事实</option>
-                                <option value="remove">移除事实</option>
+                                <option value="">请选择已确认事实</option>
+                                {confirmedFacts.map((fact) => (
+                                  <option key={fact.id} value={fact.id}>
+                                    {fact.subject} · {fact.predicate}：{fact.value}
+                                  </option>
+                                ))}
                               </select>
                             </div>
-                            {factChangeDraft.operation !== "add" && (
-                              <div className="grid gap-2">
-                                <Label htmlFor="fact-target">目标确认事实</Label>
-                                <select
-                                  id="fact-target"
-                                  className="h-10 w-full border bg-background px-3 text-sm"
-                                  value={factChangeDraft.factId ?? ""}
-                                  onChange={(event) => {
-                                    const fact = confirmedFacts.find(
-                                      (item) => item.id === event.target.value,
-                                    );
-                                    setFactChangeDraft((current) => ({
-                                      ...current,
-                                      factId: fact?.id,
-                                      factType: fact?.factType ?? current.factType,
-                                      subject: fact?.subject ?? current.subject,
-                                      predicate: fact?.predicate ?? current.predicate,
-                                      proposedValue:
-                                        current.operation === "remove"
-                                          ? ""
-                                          : (fact?.value ?? current.proposedValue),
-                                    }));
+                          )}
+                          <div className="grid gap-2">
+                            <Label htmlFor="fact-type">事实类型</Label>
+                            <Input
+                              id="fact-type"
+                              value={factChangeDraft.factType}
+                              maxLength={80}
+                              disabled={factChangeDraft.operation === 'remove'}
+                              onChange={(event) =>
+                                setFactChangeDraft((current) => ({
+                                  ...current,
+                                  factType: event.target.value,
+                                }))
+                              }
+                            />
+                          </div>
+                          <div className="grid gap-2">
+                            <Label htmlFor="fact-subject">主体</Label>
+                            <Input
+                              id="fact-subject"
+                              value={factChangeDraft.subject}
+                              maxLength={200}
+                              disabled={factChangeDraft.operation === 'remove'}
+                              onChange={(event) =>
+                                setFactChangeDraft((current) => ({
+                                  ...current,
+                                  subject: event.target.value,
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="grid gap-2">
+                          <Label htmlFor="fact-predicate">关系或属性</Label>
+                          <Input
+                            id="fact-predicate"
+                            value={factChangeDraft.predicate}
+                            maxLength={200}
+                            disabled={factChangeDraft.operation === 'remove'}
+                            onChange={(event) =>
+                              setFactChangeDraft((current) => ({
+                                ...current,
+                                predicate: event.target.value,
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="grid gap-2">
+                          <Label htmlFor="fact-value">
+                            {factChangeDraft.operation === 'remove' ? '移除目标' : '建议事实值'}
+                          </Label>
+                          <Textarea
+                            id="fact-value"
+                            value={factChangeDraft.proposedValue}
+                            maxLength={20000}
+                            className="min-h-20 resize-y"
+                            disabled={factChangeDraft.operation === 'remove'}
+                            onChange={(event) =>
+                              setFactChangeDraft((current) => ({
+                                ...current,
+                                proposedValue: event.target.value,
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="grid gap-2">
+                          <Label htmlFor="fact-evidence">正文证据</Label>
+                          <Textarea
+                            id="fact-evidence"
+                            value={factChangeDraft.evidence}
+                            maxLength={10000}
+                            className="min-h-16 resize-y"
+                            onChange={(event) =>
+                              setFactChangeDraft((current) => ({
+                                ...current,
+                                evidence: event.target.value,
+                              }))
+                            }
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            isSavingFactChange ||
+                            (factChangeDraft.operation !== 'add' && !factChangeDraft.factId) ||
+                            !factChangeDraft.factType ||
+                            !factChangeDraft.subject ||
+                            !factChangeDraft.predicate ||
+                            (factChangeDraft.operation !== 'remove' &&
+                              !factChangeDraft.proposedValue)
+                          }
+                          onClick={() => void createFactChange()}
+                        >
+                          {isSavingFactChange ? (
+                            <LoaderCircle className="animate-spin" />
+                          ) : (
+                            <Sparkles />
+                          )}
+                          提交事实建议
+                        </Button>
+                        {factChanges.map((change) => (
+                          <div key={change.id} className="grid gap-2 border p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-medium">
+                                {change.operation === 'add'
+                                  ? '新增'
+                                  : change.operation === 'update'
+                                    ? '更新'
+                                    : '移除'}
+                                ：{change.subject} · {change.predicate}
+                              </p>
+                              <Badge
+                                variant={
+                                  change.status === 'accepted'
+                                    ? 'default'
+                                    : change.status === 'rejected'
+                                      ? 'destructive'
+                                      : 'secondary'
+                                }
+                              >
+                                {change.status === 'accepted'
+                                  ? '已生效'
+                                  : change.status === 'accepted_pending_finalization'
+                                    ? '待定稿生效'
+                                  : change.status === 'rejected'
+                                    ? '已拒绝'
+                                    : '待裁决'}
+                              </Badge>
+                            </div>
+                            <p className="whitespace-pre-wrap text-sm leading-6">
+                              {change.proposedValue}
+                            </p>
+                            {change.evidence && (
+                              <p className="text-xs text-muted-foreground">
+                                证据：{change.evidence}
+                              </p>
+                            )}
+                            {typeof change.confidence === 'number' && (
+                              <p className="text-xs text-muted-foreground">
+                                证据置信度：{Math.round(change.confidence * 100)}%
+                              </p>
+                            )}
+                            {change.status === 'proposed' && (
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={resolvingFactChangeId === change.id}
+                                  onClick={() => void resolveFactChange(change, 'accept')}
+                                >
+                                  <Check />
+                                  接受
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={resolvingFactChangeId === change.id}
+                                  onClick={() => {
+                                    setEditingFactChangeId(change.id);
+                                    setEditedFactValue(change.proposedValue);
                                   }}
                                 >
-                                  <option value="">请选择已确认事实</option>
-                                  {confirmedFacts.map((fact) => (
-                                    <option key={fact.id} value={fact.id}>
-                                      {fact.subject} · {fact.predicate}：{fact.value}
-                                    </option>
-                                  ))}
-                                </select>
+                                  编辑后接受
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={resolvingFactChangeId === change.id}
+                                  onClick={() => void resolveFactChange(change, 'reject')}
+                                >
+                                  拒绝
+                                </Button>
                               </div>
                             )}
-                            <div className="grid gap-2">
-                              <Label htmlFor="fact-type">事实类型</Label>
-                              <Input
-                                id="fact-type"
-                                value={factChangeDraft.factType}
-                                maxLength={80}
-                                disabled={factChangeDraft.operation === "remove"}
-                                onChange={(event) =>
-                                  setFactChangeDraft((current) => ({
-                                    ...current,
-                                    factType: event.target.value,
-                                  }))
-                                }
-                              />
-                            </div>
-                            <div className="grid gap-2">
-                              <Label htmlFor="fact-subject">主体</Label>
-                              <Input
-                                id="fact-subject"
-                                value={factChangeDraft.subject}
-                                maxLength={200}
-                                disabled={factChangeDraft.operation === "remove"}
-                                onChange={(event) =>
-                                  setFactChangeDraft((current) => ({
-                                    ...current,
-                                    subject: event.target.value,
-                                  }))
-                                }
-                              />
-                            </div>
+                            {editingFactChangeId === change.id && (
+                              <div className="grid gap-2">
+                                <Label htmlFor={`fact-edit-${change.id}`}>确认事实值</Label>
+                                <Textarea
+                                  id={`fact-edit-${change.id}`}
+                                  value={editedFactValue}
+                                  className="min-h-20 resize-y"
+                                  onChange={(event) => setEditedFactValue(event.target.value)}
+                                />
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={
+                                    resolvingFactChangeId === change.id || !editedFactValue.trim()
+                                  }
+                                  onClick={() => void resolveFactChange(change, 'edit')}
+                                >
+                                  确认编辑
+                                </Button>
+                              </div>
+                            )}
                           </div>
-                          <div className="grid gap-2">
-                            <Label htmlFor="fact-predicate">关系或属性</Label>
-                            <Input
-                              id="fact-predicate"
-                              value={factChangeDraft.predicate}
-                              maxLength={200}
-                              disabled={factChangeDraft.operation === "remove"}
-                              onChange={(event) =>
-                                setFactChangeDraft((current) => ({
-                                  ...current,
-                                  predicate: event.target.value,
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="grid gap-2">
-                            <Label htmlFor="fact-value">
-                              {factChangeDraft.operation === "remove"
-                                ? "移除目标"
-                                : "建议事实值"}
-                            </Label>
-                            <Textarea
-                              id="fact-value"
-                              value={factChangeDraft.proposedValue}
-                              maxLength={20000}
-                              className="min-h-20 resize-y"
-                              disabled={factChangeDraft.operation === "remove"}
-                              onChange={(event) =>
-                                setFactChangeDraft((current) => ({
-                                  ...current,
-                                  proposedValue: event.target.value,
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="grid gap-2">
-                            <Label htmlFor="fact-evidence">正文证据</Label>
-                            <Textarea
-                              id="fact-evidence"
-                              value={factChangeDraft.evidence}
-                              maxLength={10000}
-                              className="min-h-16 resize-y"
-                              onChange={(event) =>
-                                setFactChangeDraft((current) => ({
-                                  ...current,
-                                  evidence: event.target.value,
-                                }))
-                              }
-                            />
-                          </div>
+                        ))}
+                        <div className="grid gap-2 border-t pt-3">
                           <Button
                             type="button"
-                            variant="outline"
                             size="sm"
                             disabled={
-                              isSavingFactChange ||
-                              (factChangeDraft.operation !== "add" &&
-                                !factChangeDraft.factId) ||
-                              !factChangeDraft.factType ||
-                              !factChangeDraft.subject ||
-                              !factChangeDraft.predicate ||
-                              (factChangeDraft.operation !== "remove" &&
-                                !factChangeDraft.proposedValue)
+                              isFinalizingChapter ||
+                              !selectedRevision ||
+                              selectedRevision.status !== 'draft' ||
+                              selectedRevision.id !== currentRevisionId ||
+                              pendingFactChanges
                             }
-                            onClick={() => void createFactChange()}
+                            onClick={() => void finalizeChapterDraft()}
                           >
-                            {isSavingFactChange ? (
+                            {isFinalizingChapter ? (
                               <LoaderCircle className="animate-spin" />
                             ) : (
-                              <Sparkles />
+                              <Check />
                             )}
-                            提交事实建议
+                            确认并定稿
                           </Button>
-                          {factChanges.map((change) => (
-                            <div key={change.id} className="grid gap-2 border p-3">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <p className="text-sm font-medium">
-                                  {change.operation === "add"
-                                    ? "新增"
-                                    : change.operation === "update"
-                                      ? "更新"
-                                      : "移除"}
-                                  ：{change.subject} · {change.predicate}
-                                </p>
-                                <Badge
-                                  variant={
-                                    change.status === "accepted"
-                                      ? "default"
-                                      : change.status === "rejected"
-                                        ? "destructive"
-                                        : "secondary"
-                                  }
-                                >
-                                  {change.status === "accepted"
-                                    ? "已接受"
-                                    : change.status === "rejected"
-                                      ? "已拒绝"
-                                      : "待裁决"}
-                                </Badge>
-                              </div>
-                              <p className="whitespace-pre-wrap text-sm leading-6">
-                                {change.proposedValue}
-                              </p>
-                              {change.evidence && (
-                                <p className="text-xs text-muted-foreground">
-                                  证据：{change.evidence}
-                                </p>
-                              )}
-                              {typeof change.confidence === "number" && (
-                                <p className="text-xs text-muted-foreground">
-                                  证据置信度：{Math.round(change.confidence * 100)}%
-                                </p>
-                              )}
-                              {change.status === "proposed" && (
-                                <div className="flex flex-wrap gap-2">
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    disabled={resolvingFactChangeId === change.id}
-                                    onClick={() =>
-                                      void resolveFactChange(change, "accept")
-                                    }
-                                  >
-                                    <Check />
-                                    接受
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={resolvingFactChangeId === change.id}
-                                    onClick={() => {
-                                      setEditingFactChangeId(change.id);
-                                      setEditedFactValue(change.proposedValue);
-                                    }}
-                                  >
-                                    编辑后接受
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={resolvingFactChangeId === change.id}
-                                    onClick={() =>
-                                      void resolveFactChange(change, "reject")
-                                    }
-                                  >
-                                    拒绝
-                                  </Button>
-                                </div>
-                              )}
-                              {editingFactChangeId === change.id && (
-                                <div className="grid gap-2">
-                                  <Label htmlFor={`fact-edit-${change.id}`}>
-                                    确认事实值
-                                  </Label>
-                                  <Textarea
-                                    id={`fact-edit-${change.id}`}
-                                    value={editedFactValue}
-                                    className="min-h-20 resize-y"
-                                    onChange={(event) =>
-                                      setEditedFactValue(event.target.value)
-                                    }
-                                  />
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    disabled={
-                                      resolvingFactChangeId === change.id ||
-                                      !editedFactValue.trim()
-                                    }
-                                    onClick={() =>
-                                      void resolveFactChange(change, "edit")
-                                    }
-                                  >
-                                    确认编辑
-                                  </Button>
-                                </div>
-                              )}
-                            </div>
-                          ))}
+                          <p className="text-xs text-muted-foreground">
+                            {finalizationBlockedReason}
+                          </p>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </section>
-              )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
 
-            <Progress
-              value={job?.progress ?? 0}
-              className="h-2"
-              aria-label="生成进度"
-            />
-            <p className="text-sm tabular-nums text-muted-foreground">
-              {job?.progress ?? 0}%
-            </p>
+            <Progress value={job?.progress ?? 0} className="h-2" aria-label="生成进度" />
+            <p className="text-sm tabular-nums text-muted-foreground">{job?.progress ?? 0}%</p>
 
             {job?.artifact && (
               <div className="grid gap-4 border-t pt-5">
                 <p className="text-sm font-semibold">生成结果</p>
                 {job.artifact.architecture && (
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground">
-                      故事架构
-                    </p>
+                    <p className="text-xs font-medium text-muted-foreground">故事架构</p>
                     <p className="mt-2 line-clamp-6 whitespace-pre-wrap text-sm leading-6">
                       {job.artifact.architecture}
                     </p>
@@ -1752,9 +1807,7 @@ export function StudioWorkbench() {
                 )}
                 {job.artifact.outline && (
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground">
-                      章节蓝图
-                    </p>
+                    <p className="text-xs font-medium text-muted-foreground">章节蓝图</p>
                     <p className="mt-2 line-clamp-6 whitespace-pre-wrap text-sm leading-6">
                       {job.artifact.outline}
                     </p>
@@ -1762,9 +1815,7 @@ export function StudioWorkbench() {
                 )}
                 {job.artifact.chapterDraft && (
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground">
-                      章节草稿快照
-                    </p>
+                    <p className="text-xs font-medium text-muted-foreground">章节草稿快照</p>
                     <Textarea
                       value={job.artifact.chapterDraft}
                       readOnly

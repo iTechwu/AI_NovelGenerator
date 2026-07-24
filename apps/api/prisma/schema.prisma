@@ -165,7 +165,11 @@ enum StudioChapterRevisionStatus {
 }
 
 enum StudioChapterFinalizationStatus {
-  FINALIZED @map("finalized")
+  PENDING     @map("pending")
+  FINALIZING  @map("finalizing")
+  FINALIZED   @map("finalized")
+  FAILED      @map("failed")
+  RECOVERABLE @map("recoverable")
 
   @@map("studio_chapter_finalization_status")
 }
@@ -176,6 +180,40 @@ enum StudioFinalizationTaskStatus {
   FAILED    @map("failed")
 
   @@map("studio_finalization_task_status")
+}
+
+enum StudioFinalizationOutboxTaskType {
+  SUMMARY @map("summary")
+  INDEX   @map("index")
+
+  @@map("studio_finalization_outbox_task_type")
+}
+
+enum StudioFinalizationOutboxTaskStatus {
+  PENDING     @map("pending")
+  RUNNING     @map("running")
+  COMPLETED   @map("completed")
+  FAILED      @map("failed")
+  RECOVERABLE @map("recoverable")
+
+  @@map("studio_finalization_outbox_task_status")
+}
+
+enum StudioReviewFindingSeverity {
+  BLOCKING @map("blocking")
+  WARNING  @map("warning")
+  INFO     @map("info")
+
+  @@map("studio_review_finding_severity")
+}
+
+enum StudioReviewFindingStatus {
+  OPEN               @map("open")
+  RESOLVED           @map("resolved")
+  IGNORED            @map("ignored")
+  INTENTIONAL_CHANGE @map("intentional_change")
+
+  @@map("studio_review_finding_status")
 }
 
 enum StudioFactStatus {
@@ -194,9 +232,10 @@ enum StudioFactChangeOperation {
 }
 
 enum StudioFactChangeStatus {
-  PROPOSED @map("proposed")
-  ACCEPTED @map("accepted")
-  REJECTED @map("rejected")
+  PROPOSED                      @map("proposed")
+  ACCEPTED_PENDING_FINALIZATION @map("accepted_pending_finalization")
+  ACCEPTED                      @map("accepted")
+  REJECTED                      @map("rejected")
 
   @@map("studio_fact_change_status")
 }
@@ -217,15 +256,17 @@ model StudioProject {
   updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   runs                 StudioGenerationRun[]
-  blueprints           StudioBlueprint[]           @relation("StudioProjectBlueprints")
-  currentBlueprint     StudioBlueprint?            @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
+  blueprints           StudioBlueprint[]              @relation("StudioProjectBlueprints")
+  currentBlueprint     StudioBlueprint?               @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
   chapterPlans         StudioChapterPlan[]
   chapterRevisions     StudioChapterRevision[]
   chapterDraftPointers StudioChapterDraftPointer[]
   chapterFinalizations StudioChapterFinalization[]
+  finalizationTasks    StudioFinalizationOutboxTask[]
   chapterFinalPointers StudioChapterFinalPointer[]
   facts                StudioFact[]
   factChanges          StudioFactChange[]
+  reviewFindings       StudioReviewFinding[]
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@map("studio_projects")
@@ -245,6 +286,7 @@ model StudioGenerationRun {
   inputSummary   String?                   @map("input_summary") @db.Text
   modelConfig    Json                      @default("{}") @map("model_config")
   factChanges    Json                      @default("[]") @map("fact_changes")
+  attemptCount   Int                       @default(0) @map("attempt_count")
   error          String?                   @db.Text
   createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -317,12 +359,12 @@ model StudioChapterPlan {
 }
 
 model StudioChapterRevision {
-  // The revision id intentionally equals the generation-run id. This makes a
-  // completed job directly addressable without making draft contents mutable.
+  // AI revisions retain their runtime linkage; author revisions use the
+  // sourceRevision relation so authorship never masquerades as a generation run.
   id               String                      @id @db.Uuid
   projectId        String                      @map("project_id") @db.Uuid
   chapterPlanId    String                      @map("chapter_plan_id") @db.Uuid
-  runId            String                      @unique @map("run_id") @db.Uuid
+  runId            String?                     @unique @map("run_id") @db.Uuid
   chapterNumber    Int                         @map("chapter_number")
   version          Int
   status           StudioChapterRevisionStatus @default(DRAFT)
@@ -339,13 +381,14 @@ model StudioChapterRevision {
 
   project          StudioProject              @relation(fields: [projectId], references: [id], onDelete: Restrict)
   chapterPlan      StudioChapterPlan          @relation(fields: [chapterPlanId], references: [id], onDelete: Restrict)
-  sourceRun        StudioGenerationRun        @relation(fields: [runId], references: [id], onDelete: Restrict)
+  sourceRun        StudioGenerationRun?       @relation(fields: [runId], references: [id], onDelete: Restrict)
   sourceRevision   StudioChapterRevision?     @relation("StudioRevisionLineage", fields: [sourceRevisionId], references: [id], onDelete: SetNull)
   derivedRevisions StudioChapterRevision[]    @relation("StudioRevisionLineage")
   currentPointer   StudioChapterDraftPointer?
   finalization     StudioChapterFinalization?
   currentFinal     StudioChapterFinalPointer?
   factChanges      StudioFactChange[]
+  reviewFindings   StudioReviewFinding[]
 
   @@unique([projectId, chapterNumber, version])
   @@index([projectId, chapterNumber, createdAt(sort: Desc)])
@@ -366,13 +409,42 @@ model StudioFact {
   createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  project       StudioProject      @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  sourceChange  StudioFactChange?  @relation("FactCreatedFromChange", fields: [sourceChangeId], references: [id], onDelete: SetNull)
-  targetChanges StudioFactChange[] @relation("FactTargetChanges")
+  project        StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  sourceChange   StudioFactChange?     @relation("FactCreatedFromChange", fields: [sourceChangeId], references: [id], onDelete: SetNull)
+  targetChanges  StudioFactChange[]    @relation("FactTargetChanges")
+  reviewFindings StudioReviewFinding[]
 
   @@index([projectId, status, effectiveChapter])
   @@index([projectId, factType, subject])
   @@map("studio_facts")
+}
+
+model StudioReviewFinding {
+  id               String                      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  findingKey       String                      @unique @map("finding_key") @db.Char(64)
+  projectId        String                      @map("project_id") @db.Uuid
+  revisionId       String                      @map("revision_id") @db.Uuid
+  chapterNumber    Int                         @map("chapter_number")
+  factId           String?                     @map("fact_id") @db.Uuid
+  ruleId           String                      @map("rule_id") @db.VarChar(120)
+  severity         StudioReviewFindingSeverity
+  status           StudioReviewFindingStatus   @default(OPEN)
+  evidenceStart    Int                         @map("evidence_start")
+  evidenceEnd      Int                         @map("evidence_end")
+  evidence         String                      @db.Text
+  suggestedAction  String                      @map("suggested_action") @db.Text
+  resolutionReason String?                     @map("resolution_reason") @db.Text
+  resolvedAt       DateTime?                   @map("resolved_at") @db.Timestamptz(6)
+  createdAt        DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project  StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision StudioChapterRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  fact     StudioFact?           @relation(fields: [factId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, chapterNumber, severity, status])
+  @@index([revisionId, status])
+  @@map("studio_review_findings")
 }
 
 model StudioFactChange {
@@ -443,22 +515,50 @@ model StudioChapterFinalPointer {
 // The transaction record is the durable source for post-finalization tasks.
 // Summary and index work remain visibly pending until their executors exist.
 model StudioChapterFinalization {
-  id            String                         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  projectId     String                         @map("project_id") @db.Uuid
-  revisionId    String                         @unique @map("revision_id") @db.Uuid
-  chapterNumber Int                            @map("chapter_number")
+  id            String                          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String                          @map("project_id") @db.Uuid
+  revisionId    String                          @unique @map("revision_id") @db.Uuid
+  chapterNumber Int                             @map("chapter_number")
   status        StudioChapterFinalizationStatus @default(FINALIZED)
   summaryStatus StudioFinalizationTaskStatus    @default(PENDING) @map("summary_status")
   indexStatus   StudioFinalizationTaskStatus    @default(PENDING) @map("index_status")
-  summary       String?                        @db.Text
-  error         String?                        @db.Text
-  finalizedAt   DateTime                       @default(now()) @map("finalized_at") @db.Timestamptz(6)
-  createdAt     DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  summary       String?                         @db.Text
+  error         String?                         @db.Text
+  finalizedAt   DateTime                        @default(now()) @map("finalized_at") @db.Timestamptz(6)
+  createdAt     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  project  StudioProject         @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  revision StudioChapterRevision @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  project  StudioProject                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision StudioChapterRevision          @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  tasks    StudioFinalizationOutboxTask[]
 
   @@index([projectId, chapterNumber, finalizedAt(sort: Desc)])
   @@map("studio_chapter_finalizations")
+}
+
+// The outbox is committed with the finalization and can be retried independently.
+model StudioFinalizationOutboxTask {
+  id             String                             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  finalizationId String                             @map("finalization_id") @db.Uuid
+  projectId      String                             @map("project_id") @db.Uuid
+  revisionId     String                             @map("revision_id") @db.Uuid
+  chapterNumber  Int                                @map("chapter_number")
+  type           StudioFinalizationOutboxTaskType
+  status         StudioFinalizationOutboxTaskStatus @default(PENDING)
+  idempotencyKey String                             @unique @map("idempotency_key") @db.VarChar(160)
+  attemptCount   Int                                @default(0) @map("attempt_count")
+  lastError      String?                            @map("last_error") @db.Text
+  payload        Json                               @default("{}")
+  result         Json?
+  completedAt    DateTime?                          @map("completed_at") @db.Timestamptz(6)
+  createdAt      DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  finalization StudioChapterFinalization @relation(fields: [finalizationId], references: [id], onDelete: Restrict)
+  project      StudioProject             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([finalizationId, type])
+  @@index([status, createdAt])
+  @@index([projectId, chapterNumber])
+  @@map("studio_finalization_outbox_tasks")
 }

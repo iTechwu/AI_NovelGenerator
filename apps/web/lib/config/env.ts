@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 const frontendEnvSchema = z.object({
-  NEXT_PUBLIC_SERVER_BASE_URL: z.string().default('http://localhost:13100'),
+  NEXT_PUBLIC_SERVER_BASE_URL: z.string().default('/api'),
   NEXT_PUBLIC_API_VERSION: z.string().optional(),
   NEXT_PUBLIC_APP_BUILD: z.string().optional(),
   NEXT_PUBLIC_BRAND_NAME: z.string().default('Dofe.AI'),

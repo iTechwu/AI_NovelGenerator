@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import os
@@ -56,6 +57,51 @@ class GenerationEngine:
     def input_snapshot_path(self, project_id: UUID, run_id: UUID) -> Path:
         return self._settings.storage_root / str(project_id) / 'inputs' / str(run_id) / 'request.json'
 
+    def checkpoint_paths(self) -> list[Path]:
+        return list(self._settings.storage_root.glob('*/checkpoints/*/status.json'))
+
+    def finalization_task_path(self, project_id: UUID, task_id: UUID) -> Path:
+        return self._settings.storage_root / str(project_id) / 'finalization-tasks' / str(task_id) / 'result.json'
+
+    def execute_finalization_task(
+        self,
+        project_id: UUID,
+        task_id: UUID,
+        revision_id: UUID,
+        chapter_number: int,
+        task_type: str,
+        content: str,
+    ) -> dict[str, Any]:
+        result_path = self.finalization_task_path(project_id, task_id)
+        if result_path.exists():
+            try:
+                persisted = json.loads(result_path.read_text(encoding='utf-8'))
+                if isinstance(persisted, dict):
+                    return persisted
+            except json.JSONDecodeError:
+                pass
+
+        if task_type == 'summary':
+            compact = ' '.join(line.strip() for line in content.splitlines() if line.strip())
+            result: dict[str, Any] = {
+                'type': 'summary',
+                'summary': compact[:2_000],
+                'revisionId': str(revision_id),
+                'chapterNumber': chapter_number,
+            }
+        elif task_type == 'index':
+            result = {
+                'type': 'index',
+                'revisionId': str(revision_id),
+                'chapterNumber': chapter_number,
+                'contentChecksum': hashlib.sha256(content.encode('utf-8')).hexdigest(),
+                'characterCount': len(content),
+            }
+        else:
+            raise ValueError(f'Unsupported finalization task type: {task_type}')
+        self._write_json(result_path, result)
+        return result
+
     def write_input_snapshot(self, project_id: UUID, run_id: UUID, request: dict[str, Any]) -> None:
         self._write_json(self.input_snapshot_path(project_id, run_id), {
             'runId': str(run_id),
@@ -71,6 +117,7 @@ class GenerationEngine:
         progress: int,
         current_step: str,
         error: str | None = None,
+        job: dict[str, Any] | None = None,
     ) -> None:
         payload = {
             'projectId': str(project_id),
@@ -80,6 +127,7 @@ class GenerationEngine:
             'currentStep': current_step,
             'updatedAt': datetime.now(timezone.utc).isoformat(),
             **({'error': error} if error else {}),
+            **({'job': job} if job else {}),
         }
         self._write_json(self.checkpoint_path(project_id, run_id), payload)
 
@@ -100,39 +148,47 @@ class GenerationEngine:
         workspace = self.workspace_for(project.id, run_id)
         workspace.mkdir(parents=True, exist_ok=True)
 
-        report(20, 'Generating story architecture')
-        Novel_architecture_generate(
-            interface_format=self._settings.interface_format,
-            api_key=self._settings.api_key,
-            base_url=self._settings.base_url,
-            llm_model=self._settings.model,
-            topic=project.premise,
-            genre=project.genre,
-            number_of_chapters=project.chapterCount,
-            word_number=project.targetWordsPerChapter,
-            filepath=str(workspace),
-            user_guidance=project.guidance,
-            temperature=self._settings.temperature,
-            max_tokens=self._settings.max_tokens,
-            timeout=self._settings.timeout_seconds,
-        )
-
-        artifact = {'architecture': self._read_output(workspace / 'Novel_architecture.txt')}
-        if project.generateOutline:
-            report(70, 'Generating chapter outline')
-            Chapter_blueprint_generate(
+        architecture_path = workspace / 'Novel_architecture.txt'
+        if architecture_path.exists():
+            report(55, 'Recovered story architecture')
+        else:
+            report(20, 'Generating story architecture')
+            Novel_architecture_generate(
                 interface_format=self._settings.interface_format,
                 api_key=self._settings.api_key,
                 base_url=self._settings.base_url,
                 llm_model=self._settings.model,
-                filepath=str(workspace),
+                topic=project.premise,
+                genre=project.genre,
                 number_of_chapters=project.chapterCount,
+                word_number=project.targetWordsPerChapter,
+                filepath=str(workspace),
                 user_guidance=project.guidance,
                 temperature=self._settings.temperature,
                 max_tokens=self._settings.max_tokens,
                 timeout=self._settings.timeout_seconds,
             )
-            artifact['outline'] = self._read_output(workspace / 'Novel_directory.txt')
+
+        artifact = {'architecture': self._read_output(architecture_path)}
+        if project.generateOutline:
+            outline_path = workspace / 'Novel_directory.txt'
+            if outline_path.exists():
+                report(90, 'Recovered chapter outline')
+            else:
+                report(70, 'Generating chapter outline')
+                Chapter_blueprint_generate(
+                    interface_format=self._settings.interface_format,
+                    api_key=self._settings.api_key,
+                    base_url=self._settings.base_url,
+                    llm_model=self._settings.model,
+                    filepath=str(workspace),
+                    number_of_chapters=project.chapterCount,
+                    user_guidance=project.guidance,
+                    temperature=self._settings.temperature,
+                    max_tokens=self._settings.max_tokens,
+                    timeout=self._settings.timeout_seconds,
+                )
+            artifact['outline'] = self._read_output(outline_path)
         return artifact
 
     def generate_chapter_draft(
@@ -154,6 +210,14 @@ class GenerationEngine:
 
         workspace = self.workspace_for(project.id, run_id)
         workspace.mkdir(parents=True, exist_ok=True)
+        output = workspace / f'chapter_{chapter_plan.chapterNumber}_draft.txt'
+        fact_changes_path = workspace / 'fact_changes.json'
+        if output.exists():
+            report(90, 'Recovered chapter draft')
+            return {
+                'chapterDraft': self._read_output(output),
+                'factChanges': self._read_fact_changes(fact_changes_path),
+            }
         report(30, 'Preparing confirmed chapter plan')
         prompt = self._chapter_draft_prompt(project, blueprint, chapter_plan, prompt_instruction)
         adapter = create_llm_adapter(
@@ -169,7 +233,6 @@ class GenerationEngine:
         content = invoke_with_cleaning(adapter, prompt)
         if not content:
             raise RuntimeError('Chapter draft generation returned empty content')
-        output = workspace / f'chapter_{chapter_plan.chapterNumber}_draft.txt'
         output.write_text(content, encoding='utf-8')
         fact_changes: list[dict[str, str | float]] = []
         try:
@@ -180,7 +243,7 @@ class GenerationEngine:
                 content,
                 invoke_with_cleaning,
             )
-            self._write_json(workspace / 'fact_changes.json', {'factChanges': fact_changes})
+            self._write_json(fact_changes_path, {'factChanges': fact_changes})
         except Exception as error:
             # Fact suggestions are advisory. A failed extraction must never
             # discard an otherwise valid immutable chapter draft.
@@ -190,6 +253,17 @@ class GenerationEngine:
                 error,
             )
         return {'chapterDraft': content, 'factChanges': fact_changes}
+
+    @staticmethod
+    def _read_fact_changes(path: Path) -> list[dict[str, str | float]]:
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            return []
+        fact_changes = payload.get('factChanges') if isinstance(payload, dict) else None
+        return fact_changes if isinstance(fact_changes, list) else []
 
     @staticmethod
     def _chapter_draft_prompt(project, blueprint, plan, prompt_instruction: str) -> str:

@@ -165,6 +165,8 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_SERVER_BASE_URL: https://${PUBLIC_DOMAIN:-dev.hanlin.ai}/api
     container_name: dofai-web
     restart: unless-stopped
     init: true
