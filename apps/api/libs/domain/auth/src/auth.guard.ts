@@ -33,6 +33,12 @@ export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
 
+    // 运维探针端点放行（健康检查 / 指标），不经过鉴权
+    const path = (request.url || '').split('?')[0];
+    if (path === '/health' || path === '/health/ready' || path === '/metrics') {
+      return true;
+    }
+
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),

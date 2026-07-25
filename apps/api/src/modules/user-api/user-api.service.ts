@@ -16,6 +16,34 @@ export class UserApiService {
     return { userId };
   }
 
+  /** PATCH /user/profile — 更新当前用户资料，返回更新后的资料 */
+  async updateProfile(
+    userId: string,
+    body: {
+      nickname?: string;
+      avatarFileId?: string | null;
+      sex?: 'UNKNOWN' | 'MALE' | 'FEMALE';
+      locale?: string;
+    },
+  ) {
+    const user = await this.userInfoService.get({ id: userId });
+    if (!user) throw apiError(UserErrorCode.UserNotFound);
+
+    const data: {
+      nickname?: string;
+      avatarFileId?: string | null;
+      sex?: 'UNKNOWN' | 'MALE' | 'FEMALE';
+      locale?: string;
+    } = {};
+    if (body.nickname !== undefined) data.nickname = body.nickname;
+    if (body.avatarFileId !== undefined) data.avatarFileId = body.avatarFileId;
+    if (body.sex !== undefined) data.sex = body.sex;
+    if (body.locale !== undefined) data.locale = body.locale;
+
+    await this.userInfoService.update({ id: userId }, data);
+    return this.getInfo(userId);
+  }
+
   /** GET /user/info — 当前用户账号资料 */
   async getInfo(userId: string) {
     const user = await this.userInfoService.get({ id: userId });

@@ -24,6 +24,14 @@ export class UserApiController {
     });
   }
 
+  @TsRestHandler(userContract.updateProfile)
+  async updateProfile(@Req() req: AuthenticatedRequest) {
+    return tsRestHandler(userContract.updateProfile, async ({ body }) => {
+      const data = await this.userApi.updateProfile(req.userId, body);
+      return { status: 200 as const, body: { code: 200, msg: 'ok', data } };
+    });
+  }
+
   @TsRestHandler(userContract.getContact)
   async getContact() {
     return tsRestHandler(userContract.getContact, async ({ params }) => {

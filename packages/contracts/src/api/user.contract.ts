@@ -7,6 +7,7 @@ import {
   UserCheckResponseSchema,
   UserAccountBaseSchema,
   UserContactResponseSchema,
+  UpdateUserProfileBodySchema,
 } from '../schemas/user.schema';
 
 const c = initContract();
@@ -47,6 +48,16 @@ export const userContract = c.router(
         400: createTypedErrorResponse([UserErrorCode.UserNotFound] as const),
       } as Record<number, z.ZodType>,
       summary: 'Get user contact info by userId',
+    },
+
+    updateProfile: {
+      method: 'PATCH',
+      path: '/profile',
+      body: UpdateUserProfileBodySchema,
+      responses: {
+        200: ApiResponseSchema(UserAccountBaseSchema),
+      },
+      summary: '更新当前用户资料（昵称/头像/性别/语言）',
     },
   },
   {

@@ -29,3 +29,12 @@ export const UserContactResponseSchema = z.object({
   mobile: z.string().optional().nullable(),
   email: z.string().email().optional().nullable(),
 });
+
+// Update profile body（当前登录用户自助修改）
+export const UpdateUserProfileBodySchema = z.object({
+  nickname: z.string().min(1).max(50).optional(),
+  avatarFileId: z.string().uuid().nullable().optional(),
+  sex: z.enum(['UNKNOWN', 'MALE', 'FEMALE']).optional(),
+  locale: z.string().max(20).optional(),
+});
+export type UpdateUserProfileBody = z.infer<typeof UpdateUserProfileBodySchema>;
