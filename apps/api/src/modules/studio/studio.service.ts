@@ -25,6 +25,7 @@ import {
   StudioAdaptationProjectService,
   StudioAdaptationSourceSnapshotService,
   StudioAdaptationSourceChapterService,
+  StudioAdaptationDecisionService,
 } from '@app/db';
 import type {
   StudioBlueprint,
@@ -39,6 +40,8 @@ import type {
   StudioProject,
   StudioAdaptationProject,
   StudioAdaptationSourceSnapshot,
+  StudioAdaptationSourceChapter,
+  StudioAdaptationDecision,
 } from '@prisma/client';
 import { CommonErrorCode } from '@repo/contracts/errors';
 import { StudioProjectImportPreviewDataSchema } from '@repo/contracts';
@@ -92,9 +95,15 @@ import type {
   StudioBlueprintRestoreResult,
   StudioChapterFinalRestoreResult,
   CreateStudioAdaptation,
+  UpdateStudioAdaptationBrief,
   StudioAdaptationProject as StudioAdaptationProjectResponse,
   StudioAdaptationListQuery,
   StudioAdaptationListResponse,
+  CreateStudioAdaptationDecision,
+  ResolveStudioAdaptationDecision,
+  StudioAdaptationDecision as StudioAdaptationDecisionResponse,
+  StudioAdaptationDecisionListQuery,
+  StudioAdaptationDecisionListResponse,
 } from '@repo/contracts';
 import { NovelRuntimeClient } from '../../clients/novel-runtime/novel-runtime.client';
 import { AuditLogService } from '@app/audit-log';
@@ -158,6 +167,7 @@ export class StudioService {
     private readonly adaptationProjectService: StudioAdaptationProjectService,
     private readonly adaptationSourceSnapshotService: StudioAdaptationSourceSnapshotService,
     private readonly adaptationSourceChapterService: StudioAdaptationSourceChapterService,
+    private readonly adaptationDecisionService: StudioAdaptationDecisionService,
     private readonly runService: StudioGenerationRunService,
     private readonly blueprintService: StudioBlueprintService,
     private readonly chapterPlanService: StudioChapterPlanService,
@@ -502,6 +512,179 @@ export class StudioService {
       episodeCount: input.episodeCount,
     });
     return this.toAdaptation(adaptation, snapshot);
+  }
+
+  async updateAdaptationBrief(
+    userId: string,
+    adaptationId: string,
+    input: UpdateStudioAdaptationBrief,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'BRIEF_DRAFT') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '已确认的改编简报不能直接修改，请在改编蓝图中创建修订。',
+      });
+    }
+    const updated = await this.adaptationProjectService.update(
+      { id: adaptationId },
+      {
+        targetFormat: input.targetFormat === 'short_drama' ? 'SHORT_DRAMA' : 'SERIES',
+        episodeCount: input.episodeCount,
+        minutesPerEpisode: input.minutesPerEpisode,
+        targetAudience: input.targetAudience,
+        adaptationGoal: input.adaptationGoal,
+        mustPreserve: input.mustPreserve,
+      },
+    );
+    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    await this.auditLogService.logUpdate(
+      'studio.adaptation_brief',
+      adaptationId,
+      userId,
+      { status: 'brief_draft' },
+      { sourceProjectId: adaptation.sourceProjectId },
+    );
+    return this.toAdaptation(updated, snapshot);
+  }
+
+  async confirmAdaptationBrief(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'BRIEF_DRAFT') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该改编简报已经确认。',
+      });
+    }
+    if (
+      adaptation.targetAudience.trim().length === 0 ||
+      adaptation.adaptationGoal.trim().length < 20 ||
+      adaptation.mustPreserve.trim().length === 0
+    ) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '确认简报前请填写目标观众、至少 20 字的改编目标和必须保留内容。',
+      });
+    }
+    const updated = await this.adaptationProjectService.update(
+      { id: adaptationId },
+      { status: 'BLUEPRINT_REVIEW' },
+    );
+    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    await this.auditLogService.logUpdate(
+      'studio.adaptation_brief',
+      adaptationId,
+      userId,
+      { status: 'blueprint_review' },
+      { sourceProjectId: adaptation.sourceProjectId, action: 'confirm' },
+    );
+    return this.toAdaptation(updated, snapshot);
+  }
+
+  async listAdaptationDecisions(
+    userId: string,
+    adaptationId: string,
+    query: StudioAdaptationDecisionListQuery,
+  ): Promise<StudioAdaptationDecisionListResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const decisions = await this.adaptationDecisionService.list(
+      { adaptationId },
+      { page: query.page, limit: query.limit, orderBy: { createdAt: 'desc' } },
+    );
+    const chapters = await Promise.all(
+      decisions.list.map((decision) =>
+        this.adaptationSourceChapterService.getById(decision.sourceChapterId),
+      ),
+    );
+
+    return {
+      ...decisions,
+      list: decisions.list.map((decision, index) => {
+        const chapter = chapters[index];
+        if (!chapter) {
+          throw apiError(CommonErrorCode.InternalServerError, {
+            message: '改编取舍的来源章节缺失，请联系支持人员。',
+          });
+        }
+        return this.toAdaptationDecision(decision, chapter);
+      }),
+    };
+  }
+
+  async createAdaptationDecision(
+    userId: string,
+    adaptationId: string,
+    input: CreateStudioAdaptationDecision,
+  ): Promise<StudioAdaptationDecisionResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'BLUEPRINT_REVIEW') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先确认改编简报，再在改编蓝图中记录取舍。',
+      });
+    }
+    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const sourceChapter = await this.adaptationSourceChapterService.getById(input.sourceChapterId);
+    if (!sourceChapter || sourceChapter.snapshotId !== snapshot.id) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '取舍必须锚定当前改编来源快照中的章节。',
+      });
+    }
+    const decision = await this.adaptationDecisionService.create({
+      adaptation: { connect: { id: adaptationId } },
+      snapshot: { connect: { id: snapshot.id } },
+      sourceChapter: { connect: { id: sourceChapter.id } },
+      type: this.toAdaptationDecisionType(input.type),
+      impact: input.impact.toUpperCase() as 'LOW' | 'MEDIUM' | 'HIGH',
+      proposal: input.proposal,
+      rationale: input.rationale,
+      status: 'PROPOSED',
+    });
+    await this.auditLogService.logCreate('studio.adaptation_decision', decision.id, userId, {
+      adaptationId,
+      sourceSnapshotId: snapshot.id,
+      sourceChapterId: sourceChapter.id,
+      type: input.type,
+      impact: input.impact,
+    });
+    return this.toAdaptationDecision(decision, sourceChapter);
+  }
+
+  async resolveAdaptationDecision(
+    userId: string,
+    adaptationId: string,
+    decisionId: string,
+    input: ResolveStudioAdaptationDecision,
+  ): Promise<StudioAdaptationDecisionResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const decision = await this.adaptationDecisionService.getById(decisionId);
+    if (!decision || decision.adaptationId !== adaptationId) {
+      throw apiError(CommonErrorCode.NotFound, { message: '改编取舍不存在。' });
+    }
+    if (decision.status !== 'PROPOSED') {
+      throw apiError(CommonErrorCode.BadRequest, { message: '该改编取舍已经处理。' });
+    }
+    const sourceChapter = await this.adaptationSourceChapterService.getById(decision.sourceChapterId);
+    if (!sourceChapter || sourceChapter.snapshotId !== decision.snapshotId) {
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '改编取舍的来源章节缺失，请联系支持人员。',
+      });
+    }
+    const updated = await this.adaptationDecisionService.update(
+      { id: decisionId },
+      {
+        status: input.outcome.toUpperCase() as 'ACCEPTED' | 'EDITED' | 'REJECTED',
+        resolutionReason: input.resolutionReason,
+        resolvedAt: new Date(),
+      },
+    );
+    await this.auditLogService.logUpdate(
+      'studio.adaptation_decision',
+      decisionId,
+      userId,
+      { status: input.outcome },
+      { adaptationId, sourceChapterId: sourceChapter.id },
+    );
+    return this.toAdaptationDecision(updated, sourceChapter);
   }
 
   async previewProjectImport(
@@ -2160,6 +2343,29 @@ export class StudioService {
     return project;
   }
 
+  private async getOwnedAdaptation(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProject> {
+    const adaptation = await this.adaptationProjectService.getById(adaptationId);
+    if (!adaptation || adaptation.ownerId !== userId) {
+      throw apiError(CommonErrorCode.NotFound, { message: '改编项目不存在。' });
+    }
+    return adaptation;
+  }
+
+  private async getAdaptationSnapshot(
+    adaptationId: string,
+  ): Promise<StudioAdaptationSourceSnapshot> {
+    const snapshot = await this.adaptationSourceSnapshotService.get({ adaptationId });
+    if (!snapshot) {
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '改编来源快照缺失，请联系支持人员。',
+      });
+    }
+    return snapshot;
+  }
+
   private async getConfirmedBlueprint(project: StudioProject): Promise<StudioBlueprint> {
     if (!project.currentBlueprintId) {
       throw apiError(CommonErrorCode.BadRequest, {
@@ -2716,6 +2922,65 @@ export class StudioService {
       createdAt: adaptation.createdAt.toISOString(),
       updatedAt: adaptation.updatedAt.toISOString(),
     };
+  }
+
+  private toAdaptationDecision(
+    decision: StudioAdaptationDecision,
+    sourceChapter: StudioAdaptationSourceChapter,
+  ): StudioAdaptationDecisionResponse {
+    const type = {
+      CUT: 'cut',
+      MERGE: 'merge',
+      REORDER: 'reorder',
+      POV_CHANGE: 'pov_change',
+      EXPAND: 'expand',
+    } as const;
+    const impact = {
+      LOW: 'low',
+      MEDIUM: 'medium',
+      HIGH: 'high',
+    } as const;
+    const status = {
+      PROPOSED: 'proposed',
+      ACCEPTED: 'accepted',
+      EDITED: 'edited',
+      REJECTED: 'rejected',
+    } as const;
+    return {
+      id: decision.id,
+      adaptationId: decision.adaptationId,
+      sourceSnapshotId: decision.snapshotId,
+      sourceChapter: {
+        id: sourceChapter.id,
+        chapterNumber: sourceChapter.chapterNumber,
+        title: sourceChapter.title,
+      },
+      type: type[decision.type],
+      impact: impact[decision.impact],
+      proposal: decision.proposal,
+      rationale: decision.rationale,
+      status: status[decision.status],
+      resolutionReason: decision.resolutionReason,
+      resolvedAt: decision.resolvedAt?.toISOString() ?? null,
+      createdAt: decision.createdAt.toISOString(),
+      updatedAt: decision.updatedAt.toISOString(),
+    };
+  }
+
+  private toAdaptationDecisionType(
+    type: CreateStudioAdaptationDecision['type'],
+  ): 'CUT' | 'MERGE' | 'REORDER' | 'POV_CHANGE' | 'EXPAND' {
+    const types: Record<
+      CreateStudioAdaptationDecision['type'],
+      'CUT' | 'MERGE' | 'REORDER' | 'POV_CHANGE' | 'EXPAND'
+    > = {
+      cut: 'CUT',
+      merge: 'MERGE',
+      reorder: 'REORDER',
+      pov_change: 'POV_CHANGE',
+      expand: 'EXPAND',
+    };
+    return types[type];
   }
 
   private toProjectListItem(

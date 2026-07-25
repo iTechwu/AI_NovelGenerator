@@ -8,6 +8,8 @@ const projectId = 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1';
 const runId = 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a';
 const adaptationId = '9411db03-f65f-4829-aae5-82175bdc25b4';
 const snapshotId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+const sourceChapterId = 'c2fe573d-e9e0-423e-9319-4f6fc375e75d';
+const decisionId = '44bc6378-7f2d-43a8-8ee3-9ed5d72c19d8';
 const revisionId = '06c1a8d0-df48-41de-bb05-9e3219a31352';
 const createdAt = new Date('2026-07-24T02:00:00.000Z');
 
@@ -56,7 +58,9 @@ describe('StudioService', () => {
   };
   const adaptationProjectService = {
     create: jest.fn(),
+    getById: jest.fn(),
     list: jest.fn(),
+    update: jest.fn(),
   };
   const adaptationSourceSnapshotService = {
     create: jest.fn(),
@@ -64,6 +68,13 @@ describe('StudioService', () => {
   };
   const adaptationSourceChapterService = {
     createMany: jest.fn(),
+    getById: jest.fn(),
+  };
+  const adaptationDecisionService = {
+    create: jest.fn(),
+    getById: jest.fn(),
+    list: jest.fn(),
+    update: jest.fn(),
   };
   const blueprintService = {
     create: jest.fn(),
@@ -160,6 +171,7 @@ describe('StudioService', () => {
       adaptationProjectService as never,
       adaptationSourceSnapshotService as never,
       adaptationSourceChapterService as never,
+      adaptationDecisionService as never,
       runService as never,
       blueprintService as never,
       chapterPlanService as never,
@@ -323,6 +335,243 @@ describe('StudioService', () => {
       id: adaptationId,
       status: 'brief_draft',
       sourceSnapshot: { id: snapshotId, sourceChapterCount: 1 },
+    });
+  });
+
+  it('saves a draft adaptation brief without changing its immutable source snapshot', async () => {
+    const adaptation = {
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '',
+      adaptationGoal: '',
+      mustPreserve: '',
+      status: 'BRIEF_DRAFT',
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const snapshot = {
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: projectInput.title,
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 1,
+      createdAt,
+    };
+    const updated = {
+      ...adaptation,
+      targetFormat: 'SHORT_DRAMA',
+      episodeCount: 60,
+      minutesPerEpisode: 2,
+      targetAudience: '短剧用户',
+      adaptationGoal: '将主线事件压缩为强节奏的短剧冲突。',
+      mustPreserve: '保留主角追查失踪案的动机。',
+    };
+    adaptationProjectService.getById.mockResolvedValue(adaptation);
+    adaptationProjectService.update.mockResolvedValue(updated);
+    adaptationSourceSnapshotService.get.mockResolvedValue(snapshot);
+
+    const result = await service.updateAdaptationBrief(ownerId, adaptationId, {
+      targetFormat: 'short_drama',
+      episodeCount: 60,
+      minutesPerEpisode: 2,
+      targetAudience: '短剧用户',
+      adaptationGoal: '将主线事件压缩为强节奏的短剧冲突。',
+      mustPreserve: '保留主角追查失踪案的动机。',
+    });
+
+    expect(adaptationProjectService.update).toHaveBeenCalledWith(
+      { id: adaptationId },
+      expect.objectContaining({ targetFormat: 'SHORT_DRAMA', episodeCount: 60 }),
+    );
+    expect(adaptationSourceSnapshotService.get).toHaveBeenCalledWith({ adaptationId });
+    expect(result).toMatchObject({
+      targetFormat: 'short_drama',
+      status: 'brief_draft',
+      sourceSnapshot: { id: snapshotId },
+    });
+  });
+
+  it('confirms only a complete adaptation brief before blueprint review', async () => {
+    const incomplete = {
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetAudience: '',
+      adaptationGoal: '',
+      mustPreserve: '',
+      status: 'BRIEF_DRAFT',
+    };
+    adaptationProjectService.getById.mockResolvedValueOnce(incomplete);
+    await expect(service.confirmAdaptationBrief(ownerId, adaptationId)).rejects.toMatchObject({});
+    expect(adaptationProjectService.update).not.toHaveBeenCalled();
+
+    const complete = {
+      ...incomplete,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线，同时强化女主与父亲的冲突。',
+      mustPreserve: '保留雾港秘密与终局反转。',
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const snapshot = {
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: projectInput.title,
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 1,
+      createdAt,
+    };
+    adaptationProjectService.getById.mockResolvedValueOnce(complete);
+    adaptationProjectService.update.mockResolvedValue({ ...complete, status: 'BLUEPRINT_REVIEW' });
+    adaptationSourceSnapshotService.get.mockResolvedValue(snapshot);
+
+    const result = await service.confirmAdaptationBrief(ownerId, adaptationId);
+
+    expect(adaptationProjectService.update).toHaveBeenCalledWith(
+      { id: adaptationId },
+      { status: 'BLUEPRINT_REVIEW' },
+    );
+    expect(result.status).toBe('blueprint_review');
+  });
+
+  it('records a source-anchored decision only during adaptation blueprint review', async () => {
+    const adaptation = {
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      status: 'BLUEPRINT_REVIEW',
+    };
+    const snapshot = { id: snapshotId, adaptationId };
+    const sourceChapter = {
+      id: sourceChapterId,
+      snapshotId,
+      chapterNumber: 1,
+      title: '迟到的信件',
+    };
+    const decision = {
+      id: decisionId,
+      adaptationId,
+      snapshotId,
+      sourceChapterId,
+      type: 'CUT',
+      impact: 'HIGH',
+      proposal: '删去重复交代港口历史的段落。',
+      rationale: '将有限时长留给人物关系和案件推进。',
+      status: 'PROPOSED',
+      resolutionReason: null,
+      resolvedAt: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    adaptationProjectService.getById.mockResolvedValue(adaptation);
+    adaptationSourceSnapshotService.get.mockResolvedValue(snapshot);
+    adaptationSourceChapterService.getById.mockResolvedValue(sourceChapter);
+    adaptationDecisionService.create.mockResolvedValue(decision);
+
+    const result = await service.createAdaptationDecision(ownerId, adaptationId, {
+      sourceChapterId,
+      type: 'cut',
+      impact: 'high',
+      proposal: decision.proposal,
+      rationale: decision.rationale,
+    });
+
+    expect(adaptationDecisionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'CUT',
+        impact: 'HIGH',
+        sourceChapter: { connect: { id: sourceChapterId } },
+        snapshot: { connect: { id: snapshotId } },
+      }),
+    );
+    expect(result).toMatchObject({
+      type: 'cut',
+      impact: 'high',
+      status: 'proposed',
+      sourceChapter: { id: sourceChapterId, title: '迟到的信件' },
+    });
+  });
+
+  it('rejects a decision anchor outside the immutable adaptation snapshot', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      status: 'BLUEPRINT_REVIEW',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationSourceChapterService.getById.mockResolvedValue({
+      id: sourceChapterId,
+      snapshotId: 'dcfc2f2a-e318-4bca-b0e3-9898b111197d',
+    });
+
+    await expect(
+      service.createAdaptationDecision(ownerId, adaptationId, {
+        sourceChapterId,
+        type: 'merge',
+        impact: 'medium',
+        proposal: '合并两个介绍同一线索的段落。',
+        rationale: '减少重复信息。',
+      }),
+    ).rejects.toMatchObject({});
+    expect(adaptationDecisionService.create).not.toHaveBeenCalled();
+  });
+
+  it('resolves a proposed adaptation decision once and preserves its source anchor', async () => {
+    const sourceChapter = {
+      id: sourceChapterId,
+      snapshotId,
+      chapterNumber: 1,
+      title: '迟到的信件',
+    };
+    const proposed = {
+      id: decisionId,
+      adaptationId,
+      snapshotId,
+      sourceChapterId,
+      type: 'MERGE',
+      impact: 'MEDIUM',
+      proposal: '合并两段线索介绍。',
+      rationale: '提升节奏。',
+      status: 'PROPOSED',
+      resolutionReason: null,
+      resolvedAt: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const resolvedAt = new Date('2026-07-25T08:00:00.000Z');
+    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, ownerId });
+    adaptationDecisionService.getById.mockResolvedValue(proposed);
+    adaptationSourceChapterService.getById.mockResolvedValue(sourceChapter);
+    adaptationDecisionService.update.mockResolvedValue({
+      ...proposed,
+      status: 'ACCEPTED',
+      resolutionReason: '保留合并后的关键情绪转折。',
+      resolvedAt,
+      updatedAt: resolvedAt,
+    });
+
+    const result = await service.resolveAdaptationDecision(ownerId, adaptationId, decisionId, {
+      outcome: 'accepted',
+      resolutionReason: '保留合并后的关键情绪转折。',
+    });
+
+    expect(adaptationDecisionService.update).toHaveBeenCalledWith(
+      { id: decisionId },
+      expect.objectContaining({ status: 'ACCEPTED', resolutionReason: '保留合并后的关键情绪转折。' }),
+    );
+    expect(result).toMatchObject({
+      status: 'accepted',
+      sourceChapter: { id: sourceChapterId },
+      resolutionReason: '保留合并后的关键情绪转折。',
     });
   });
 

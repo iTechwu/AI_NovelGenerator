@@ -98,6 +98,15 @@ export const CreateStudioAdaptationSchema = z.object({
   rightsConfirmed: z.literal(true),
 });
 
+export const UpdateStudioAdaptationBriefSchema = z.object({
+  targetFormat: StudioAdaptationTargetFormatSchema,
+  episodeCount: z.coerce.number().int().min(1).max(100),
+  minutesPerEpisode: z.coerce.number().int().min(1).max(120),
+  targetAudience: z.string().trim().max(500),
+  adaptationGoal: z.string().trim().max(10_000),
+  mustPreserve: z.string().trim().max(10_000),
+});
+
 export const StudioAdaptationSourceSnapshotSchema = z.object({
   id: z.string().uuid(),
   sourceProjectId: z.string().uuid(),
@@ -128,6 +137,62 @@ export const StudioAdaptationListQuerySchema = PaginationQuerySchema.pick({
 });
 export const StudioAdaptationListResponseSchema = PaginatedResponseSchema(
   StudioAdaptationProjectSchema,
+);
+
+export const StudioAdaptationDecisionTypeSchema = z.enum([
+  'cut',
+  'merge',
+  'reorder',
+  'pov_change',
+  'expand',
+]);
+export const StudioAdaptationDecisionImpactSchema = z.enum(['low', 'medium', 'high']);
+export const StudioAdaptationDecisionStatusSchema = z.enum([
+  'proposed',
+  'accepted',
+  'edited',
+  'rejected',
+]);
+
+export const CreateStudioAdaptationDecisionSchema = z.object({
+  sourceChapterId: z.string().uuid(),
+  type: StudioAdaptationDecisionTypeSchema,
+  impact: StudioAdaptationDecisionImpactSchema,
+  proposal: z.string().trim().min(1).max(10_000),
+  rationale: z.string().trim().min(1).max(10_000),
+});
+
+export const ResolveStudioAdaptationDecisionSchema = z.object({
+  outcome: z.enum(['accepted', 'edited', 'rejected']),
+  resolutionReason: z.string().trim().min(1).max(10_000),
+});
+
+export const StudioAdaptationDecisionSchema = z.object({
+  id: z.string().uuid(),
+  adaptationId: z.string().uuid(),
+  sourceSnapshotId: z.string().uuid(),
+  sourceChapter: z.object({
+    id: z.string().uuid(),
+    chapterNumber: z.number().int().positive(),
+    title: z.string(),
+  }),
+  type: StudioAdaptationDecisionTypeSchema,
+  impact: StudioAdaptationDecisionImpactSchema,
+  proposal: z.string(),
+  rationale: z.string(),
+  status: StudioAdaptationDecisionStatusSchema,
+  resolutionReason: z.string().nullable(),
+  resolvedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const StudioAdaptationDecisionListQuerySchema = PaginationQuerySchema.pick({
+  limit: true,
+  page: true,
+});
+export const StudioAdaptationDecisionListResponseSchema = PaginatedResponseSchema(
+  StudioAdaptationDecisionSchema,
 );
 
 export const StudioProjectImportResultSchema = z.object({
@@ -531,9 +596,23 @@ export type StudioProjectImportFactCandidate = z.infer<
 export type ConfirmStudioProjectImport = z.infer<typeof ConfirmStudioProjectImportSchema>;
 export type StudioProjectImportResult = z.infer<typeof StudioProjectImportResultSchema>;
 export type CreateStudioAdaptation = z.infer<typeof CreateStudioAdaptationSchema>;
+export type UpdateStudioAdaptationBrief = z.infer<typeof UpdateStudioAdaptationBriefSchema>;
 export type StudioAdaptationProject = z.infer<typeof StudioAdaptationProjectSchema>;
 export type StudioAdaptationListQuery = z.infer<typeof StudioAdaptationListQuerySchema>;
 export type StudioAdaptationListResponse = z.infer<typeof StudioAdaptationListResponseSchema>;
+export type CreateStudioAdaptationDecision = z.infer<
+  typeof CreateStudioAdaptationDecisionSchema
+>;
+export type ResolveStudioAdaptationDecision = z.infer<
+  typeof ResolveStudioAdaptationDecisionSchema
+>;
+export type StudioAdaptationDecision = z.infer<typeof StudioAdaptationDecisionSchema>;
+export type StudioAdaptationDecisionListQuery = z.infer<
+  typeof StudioAdaptationDecisionListQuerySchema
+>;
+export type StudioAdaptationDecisionListResponse = z.infer<
+  typeof StudioAdaptationDecisionListResponseSchema
+>;
 export type StudioFactProposal = z.infer<typeof StudioFactProposalSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type StudioBlueprint = z.infer<typeof StudioBlueprintSchema>;

@@ -3,6 +3,20 @@
 /* Import shared UI theme (design tokens, shadcn/ui variables) */
 @import '@repo/ui/globals.css';
 
+/* Keep the scaffold's neutral surface and use AgentSpace green for actions. */
+:root {
+  --primary: oklch(0.55 0.14 162);
+  --primary-foreground: oklch(0.99 0.005 162);
+  --accent: oklch(0.96 0.01 162);
+  --accent-foreground: oklch(0.25 0.02 165);
+  --ring: oklch(0.55 0.14 162);
+  --sidebar-primary: oklch(0.55 0.14 162);
+  --sidebar-primary-foreground: oklch(0.99 0.005 162);
+  --sidebar-accent: oklch(0.96 0.01 162);
+  --sidebar-accent-foreground: oklch(0.25 0.02 165);
+  --sidebar-ring: oklch(0.55 0.14 162);
+}
+
 /* Custom animations */
 @keyframes blink {
   0%, 100% { opacity: 1; }
@@ -29,6 +43,12 @@ body {
   font-feature-settings: 'rlig' 1, 'calt' 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.story-premise-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted-foreground);
+  pointer-events: none;
 }
 
 /* Responsive Design Utilities */

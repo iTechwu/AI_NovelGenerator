@@ -11,6 +11,7 @@ export * from './modules/studio-project-import';
 export * from './modules/studio-adaptation-project';
 export * from './modules/studio-adaptation-source-snapshot';
 export * from './modules/studio-adaptation-source-chapter';
+export * from './modules/studio-adaptation-decision';
 export * from './modules/studio-generation-run';
 export * from './modules/studio-blueprint';
 export * from './modules/studio-chapter-plan';

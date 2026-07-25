@@ -332,6 +332,35 @@ enum StudioAdaptationStatus {
   @@map("studio_adaptation_status")
 }
 
+// Adaptation decisions are explicit author-reviewed changes from the source
+// novel. A decision always retains its source chapter anchor for later review.
+enum StudioAdaptationDecisionType {
+  CUT        @map("cut")
+  MERGE      @map("merge")
+  REORDER    @map("reorder")
+  POV_CHANGE @map("pov_change")
+  EXPAND     @map("expand")
+
+  @@map("studio_adaptation_decision_type")
+}
+
+enum StudioAdaptationDecisionImpact {
+  LOW    @map("low")
+  MEDIUM @map("medium")
+  HIGH   @map("high")
+
+  @@map("studio_adaptation_decision_impact")
+}
+
+enum StudioAdaptationDecisionStatus {
+  PROPOSED @map("proposed")
+  ACCEPTED @map("accepted")
+  EDITED   @map("edited")
+  REJECTED @map("rejected")
+
+  @@map("studio_adaptation_decision_status")
+}
+
 enum StudioFinalizationTaskStatus {
   PENDING   @map("pending")
   COMPLETED @map("completed")
@@ -486,6 +515,7 @@ model StudioAdaptationProject {
 
   sourceProject  StudioProject                   @relation("StudioAdaptationSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
   sourceSnapshot StudioAdaptationSourceSnapshot?
+  decisions      StudioAdaptationDecision[]
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([sourceProjectId, createdAt(sort: Desc)])
@@ -506,6 +536,7 @@ model StudioAdaptationSourceSnapshot {
   adaptation    StudioAdaptationProject         @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
   sourceProject StudioProject                   @relation("StudioAdaptationSnapshotSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
   chapters      StudioAdaptationSourceChapter[]
+  decisions     StudioAdaptationDecision[]
 
   @@index([sourceProjectId, createdAt(sort: Desc)])
   @@map("studio_adaptation_source_snapshots")
@@ -524,10 +555,35 @@ model StudioAdaptationSourceChapter {
 
   snapshot       StudioAdaptationSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   sourceRevision StudioChapterRevision          @relation(fields: [sourceRevisionId], references: [id], onDelete: Restrict)
+  decisions      StudioAdaptationDecision[]
 
   @@unique([snapshotId, chapterNumber])
   @@index([sourceRevisionId])
   @@map("studio_adaptation_source_chapters")
+}
+
+model StudioAdaptationDecision {
+  id               String                         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId     String                         @map("adaptation_id") @db.Uuid
+  snapshotId       String                         @map("snapshot_id") @db.Uuid
+  sourceChapterId  String                         @map("source_chapter_id") @db.Uuid
+  type             StudioAdaptationDecisionType
+  impact           StudioAdaptationDecisionImpact
+  proposal         String                         @db.Text
+  rationale        String                         @db.Text
+  status           StudioAdaptationDecisionStatus @default(PROPOSED)
+  resolutionReason String?                        @map("resolution_reason") @db.Text
+  resolvedAt       DateTime?                      @map("resolved_at") @db.Timestamptz(6)
+  createdAt        DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  adaptation    StudioAdaptationProject        @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
+  snapshot      StudioAdaptationSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  sourceChapter StudioAdaptationSourceChapter  @relation(fields: [sourceChapterId], references: [id], onDelete: Restrict)
+
+  @@index([adaptationId, status, createdAt(sort: Desc)])
+  @@index([sourceChapterId])
+  @@map("studio_adaptation_decisions")
 }
 
 model StudioGenerationRun {

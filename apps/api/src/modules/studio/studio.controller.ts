@@ -90,6 +90,83 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.updateAdaptationBrief)
+  async updateAdaptationBrief(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.updateAdaptationBrief, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.updateAdaptationBrief(
+          request.userId,
+          params.adaptationId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.confirmAdaptationBrief)
+  async confirmAdaptationBrief(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.confirmAdaptationBrief, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.confirmAdaptationBrief(request.userId, params.adaptationId),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listAdaptationDecisions)
+  async listAdaptationDecisions(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listAdaptationDecisions, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listAdaptationDecisions(
+          request.userId,
+          params.adaptationId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.createAdaptationDecision)
+  async createAdaptationDecision(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createAdaptationDecision, async ({ params, body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.createAdaptationDecision(
+          request.userId,
+          params.adaptationId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.resolveAdaptationDecision)
+  async resolveAdaptationDecision(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.resolveAdaptationDecision, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.resolveAdaptationDecision(
+          request.userId,
+          params.adaptationId,
+          params.decisionId,
+          body,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.exportProject)
   async exportProject(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.exportProject, async ({ params, query }) => ({

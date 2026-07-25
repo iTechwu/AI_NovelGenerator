@@ -5,6 +5,7 @@ import { StudioWorkbench } from './studio-workbench';
 
 const {
   confirmChapterPlan,
+  confirmAdaptationBrief,
   compareChapterRevisions,
   createAdaptation,
   createAuthorChapterRevision,
@@ -34,9 +35,11 @@ const {
   retryJob,
   cancelJob,
   saveChapterPlan,
+  updateAdaptationBrief,
   updateBlueprint,
 } = vi.hoisted(() => ({
   confirmChapterPlan: vi.fn(),
+  confirmAdaptationBrief: vi.fn(),
   compareChapterRevisions: vi.fn(),
   createAdaptation: vi.fn(),
   createAuthorChapterRevision: vi.fn(),
@@ -66,6 +69,7 @@ const {
   retryJob: vi.fn(),
   cancelJob: vi.fn(),
   saveChapterPlan: vi.fn(),
+  updateAdaptationBrief: vi.fn(),
   updateBlueprint: vi.fn(),
 }));
 
@@ -75,6 +79,8 @@ vi.mock('@/lib/api/contracts/client', () => ({
     listAdaptations,
     createProject,
     createAdaptation,
+    updateAdaptationBrief,
+    confirmAdaptationBrief,
     getBlueprint,
     getProjectOverview,
     getJob,
@@ -117,9 +123,22 @@ vi.mock('@repo/ui', () => ({
     <label {...props}>{children}</label>
   ),
   Progress: (props: React.HTMLAttributes<HTMLDivElement>) => <div {...props} />,
+  Select: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SelectContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SelectItem: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  SelectTrigger: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button {...props}>{children}</button>
+  ),
+  SelectValue: () => null,
   Skeleton: (props: React.HTMLAttributes<HTMLDivElement>) => <div {...props} />,
   Textarea: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => <textarea {...props} />,
 }));
+
+function setStoryPremise(value: string) {
+  const editor = screen.getByLabelText('故事梗概');
+  editor.textContent = value;
+  fireEvent.input(editor);
+}
 
 describe('StudioWorkbench', () => {
   beforeEach(() => {
@@ -127,6 +146,8 @@ describe('StudioWorkbench', () => {
     listAdaptations.mockReset();
     createProject.mockReset();
     createAdaptation.mockReset();
+    updateAdaptationBrief.mockReset();
+    confirmAdaptationBrief.mockReset();
     createAuthorChapterRevision.mockReset();
     finalizeChapterRevision.mockReset();
     getBlueprint.mockReset();
@@ -177,6 +198,8 @@ describe('StudioWorkbench', () => {
       status: 200,
       body: { data: { list: [], total: 0, page: 1, limit: 20 } },
     });
+    updateAdaptationBrief.mockResolvedValue({ status: 500 });
+    confirmAdaptationBrief.mockResolvedValue({ status: 500 });
     getChapterPlan.mockResolvedValue({ status: 404 });
     listChapterRevisions.mockResolvedValue({
       status: 200,
@@ -259,14 +282,29 @@ describe('StudioWorkbench', () => {
     });
   });
 
+  it('asks for a project name before revealing the detailed story form', async () => {
+    render(<StudioWorkbench />);
+
+    expect(screen.getByRole('heading', { name: '从一个项目开始' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('故事梗概')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    expect(await screen.findByText('请先为项目命名。')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+
+    expect(await screen.findByLabelText('故事梗概')).toBeInTheDocument();
+    expect(screen.getByText('当前项目')).toBeInTheDocument();
+  });
+
   it('refreshes the project library when creation dispatch fails after persistence', async () => {
     createProject.mockRejectedValue(new Error('runtime unavailable'));
 
     render(<StudioWorkbench />);
     fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
 
     expect(
@@ -282,9 +320,8 @@ describe('StudioWorkbench', () => {
 
     render(<StudioWorkbench />);
     fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
 
     expect(
@@ -534,6 +571,90 @@ describe('StudioWorkbench', () => {
     expect(await screen.findByText('剧集改编')).toBeInTheDocument();
   });
 
+  it('saves and confirms an adaptation brief before the next blueprint stage', async () => {
+    const draftAdaptation = {
+      id: '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7',
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '',
+      adaptationGoal: '',
+      mustPreserve: '',
+      status: 'brief_draft' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 1,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    getProjectOverview.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          projectId: draftAdaptation.sourceProjectId,
+          finalizedChapterCount: 1,
+          pendingChapterReviewNumbers: [],
+          pendingFactChangeCount: 0,
+          confirmedFactCount: 0,
+          blockingFindingCount: 0,
+          pendingFinalizationTaskCount: 0,
+          failedFinalizationTaskCount: 0,
+        },
+      },
+    });
+    getBlueprint.mockResolvedValue({ status: 404 });
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [draftAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    const completedBrief = {
+      ...draftAdaptation,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线，同时强化女主与父亲的冲突。',
+      mustPreserve: '保留雾港秘密与终局反转。',
+    };
+    updateAdaptationBrief.mockResolvedValue({ status: 200, body: { data: completedBrief } });
+    confirmAdaptationBrief.mockResolvedValue({
+      status: 200,
+      body: { data: { ...completedBrief, status: 'blueprint_review' } },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '编辑简报' }));
+    fireEvent.change(screen.getByLabelText('目标观众'), {
+      target: { value: completedBrief.targetAudience },
+    });
+    fireEvent.change(screen.getByLabelText('改编目标'), {
+      target: { value: completedBrief.adaptationGoal },
+    });
+    fireEvent.change(screen.getByLabelText('必须保留'), {
+      target: { value: completedBrief.mustPreserve },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存简报' }));
+
+    await waitFor(() => {
+      expect(updateAdaptationBrief).toHaveBeenCalledWith({
+        params: { adaptationId: draftAdaptation.id },
+        body: expect.objectContaining({ targetAudience: '悬疑剧观众' }),
+      });
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '确认简报并进入蓝图审阅' }));
+    await waitFor(() => {
+      expect(confirmAdaptationBrief).toHaveBeenCalledWith({
+        params: { adaptationId: draftAdaptation.id },
+        body: {},
+      });
+    });
+    expect(await screen.findByText('待蓝图审阅')).toBeInTheDocument();
+  });
+
   it('offers recovery for a failed generation after opening the project', async () => {
     const failedRun = {
       id: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
@@ -647,9 +768,8 @@ describe('StudioWorkbench', () => {
     fireEvent.change(screen.getByLabelText('项目名称'), {
       target: { value: '雾港来信' },
     });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
 
     expect(await screen.findByText('创作蓝图')).toBeInTheDocument();
@@ -719,9 +839,8 @@ describe('StudioWorkbench', () => {
     fireEvent.change(screen.getByLabelText('项目名称'), {
       target: { value: '雾港来信' },
     });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
 
     expect(await screen.findByRole('button', { name: '创建修订版' })).toBeInTheDocument();
@@ -810,9 +929,8 @@ describe('StudioWorkbench', () => {
     fireEvent.change(screen.getByLabelText('项目名称'), {
       target: { value: '雾港来信' },
     });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
 
     expect(await screen.findByText('章节计划')).toBeInTheDocument();
@@ -933,9 +1051,8 @@ describe('StudioWorkbench', () => {
 
     render(<StudioWorkbench />);
     fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
     expect(
       await screen.findByRole('button', { name: '生成本章草稿' }, { timeout: 5_000 }),
@@ -1063,9 +1180,8 @@ describe('StudioWorkbench', () => {
 
     render(<StudioWorkbench />);
     fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
     expect(await screen.findByText('草稿 v2')).toBeInTheDocument();
     expect(await screen.findByLabelText('草稿版本差异')).toHaveTextContent('第一版雨声。');
@@ -1227,9 +1343,8 @@ describe('StudioWorkbench', () => {
 
     render(<StudioWorkbench />);
     fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
-    fireEvent.change(screen.getByLabelText('故事梗概'), {
-      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
-    });
+    fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
+    setStoryPremise('一封迟到二十年的信件，让雾港的失踪案重新浮出水面。');
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
     expect(await screen.findByText('事实建议')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('主体'), { target: { value: '林雾' } });

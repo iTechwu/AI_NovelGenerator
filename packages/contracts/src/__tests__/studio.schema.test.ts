@@ -2,6 +2,9 @@ import {
   CreateStudioAuthorRevisionSchema,
   CreateStudioProjectSchema,
   CreateStudioAdaptationSchema,
+  CreateStudioAdaptationDecisionSchema,
+  ResolveStudioAdaptationDecisionSchema,
+  UpdateStudioAdaptationBriefSchema,
   GenerationJobSchema,
   ResolveStudioReviewFindingSchema,
   StudioProjectExportQuerySchema,
@@ -69,6 +72,56 @@ describe('studio schemas', () => {
         rightsConfirmed: true,
       }),
     ).toMatchObject({ targetFormat: 'short_drama', rightsConfirmed: true });
+  });
+
+  it('keeps brief edits bounded while allowing an author to complete them before confirmation', () => {
+    expect(
+      UpdateStudioAdaptationBriefSchema.safeParse({
+        targetFormat: 'series',
+        episodeCount: 12,
+        minutesPerEpisode: 45,
+        targetAudience: '悬疑剧观众',
+        adaptationGoal: '保留原作悬疑主线，同时强化角色冲突。',
+        mustPreserve: '保留主角动机。',
+      }).success,
+    ).toBe(true);
+    expect(
+      UpdateStudioAdaptationBriefSchema.safeParse({
+        targetFormat: 'series',
+        episodeCount: 101,
+        minutesPerEpisode: 45,
+        targetAudience: '',
+        adaptationGoal: '',
+        mustPreserve: '',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires a source chapter, rationale, and explicit outcome for adaptation decisions', () => {
+    expect(
+      CreateStudioAdaptationDecisionSchema.safeParse({
+        sourceChapterId: 'd5a58dc8-0dea-4766-a7f7-9c384ee8d9f2',
+        type: 'cut',
+        impact: 'high',
+        proposal: '删去重复交代港口历史的段落。',
+        rationale: '让有限时长留给人物关系和案件推进。',
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateStudioAdaptationDecisionSchema.safeParse({
+        sourceChapterId: 'not-a-uuid',
+        type: 'cut',
+        impact: 'high',
+        proposal: '删去重复交代港口历史的段落。',
+        rationale: '',
+      }).success,
+    ).toBe(false);
+    expect(
+      ResolveStudioAdaptationDecisionSchema.safeParse({
+        outcome: 'accepted',
+        resolutionReason: '',
+      }).success,
+    ).toBe(false);
   });
 
   it('preserves author revision content while rejecting whitespace-only text', () => {
