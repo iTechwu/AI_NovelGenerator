@@ -52,15 +52,15 @@ Studio 模块  (apps/api/src/modules/studio/)  + cron(studio-generation / studio
 | 故事架构生成 | `Novel_architecture_generate` (architecture.py:49) | ✅ blueprint job | 否 | 是(filepath) |
 | 章节大纲生成 | `Chapter_blueprint_generate` (blueprint.py:50) | ✅ blueprint job | 否 | 是 |
 | **章节草稿（简化版）** | `engine._chapter_draft_prompt`+`invoke_with_cleaning` (engine.py) | ⚠️ 部分 | 否 | 是 |
-| **章节草稿（完整编排版）** | `generate_chapter_draft` (chapter.py:526) | ❌ 未暴露 | **是** | 是 |
-| 构造章节提示词 | `build_chapter_prompt` (chapter.py:285) | ❌ | 是 | 是 |
+| **章节草稿（完整编排版）** | `generate_chapter_draft` (chapter.py:526) | ✅ job `kind=chapter_draft_full` | **是** | 是 |
+| 构造章节提示词 | `build_chapter_prompt` (chapter.py:285) | ✅ 随 `chapter_draft_full` 内部落地 | 是 | 是 |
 | 前文摘要（LLM） | `summarize_recent_chapters` (chapter.py:42) | ✅ `POST /v1/chapters/summarize-recent` | 否 | 否(传文本) |
 | 取最近 N 章正文 | `get_last_n_chapters_text` (chapter.py:27) | ❌ | 否 | 是 |
-| 知识库导入 | `import_knowledge_file` (knowledge.py:51) | ❌ | **是** | 是 |
-| 向量库初始化/加载/更新 | `init/load/update_vector_store` (vectorstore_utils.py) | ❌ | **是** | 是 |
-| 相关上下文检索 | `get_relevant_context_from_vector_store` (vectorstore_utils.py:206) | ❌ | **是** | 是 |
+| 知识库导入 | `import_knowledge_file` (knowledge.py:51) | ✅ `POST /v1/knowledge/import` | **是** | 是 |
+| 向量库初始化/加载/更新 | `init/load/update_vector_store` (vectorstore_utils.py) | ✅（由 import/clear 驱动） | **是** | 是 |
+| 相关上下文检索 | `get_relevant_context_from_vector_store` (vectorstore_utils.py:206) | ✅ `POST /v1/knowledge/query` | **是** | 是 |
 | 知识上下文过滤 | `get_filtered_knowledge_context` (chapter.py:218) | ❌ | **是** | 是 |
-| 清空向量库 | `clear_vector_store` (vectorstore_utils.py:33) | ❌ | 否 | 是 |
+| 清空向量库 | `clear_vector_store` (vectorstore_utils.py:33) | ✅ `DELETE /v1/knowledge/{projectId}` | 否 | 是 |
 | **章节定稿（完整版）** | `finalize_chapter` (finalization.py:37) | ❌ | **是** | 是 |
 | 章节定稿（简化 summary/index） | `engine.execute_finalization_task` | ⚠️ 部分 | 否 | 否 |
 | **章节扩写** | `enrich_chapter_text` (finalization.py:115) | ✅ `POST /v1/chapters/enrich` | 否 | 否(传文本) |
@@ -213,9 +213,9 @@ NestJS Studio
 | 阶段 | 内容 | 依赖 |
 |---|---|---|
 | **P0 前置** | embedding 环境变量 + RuntimeSettings + adapter 装配；start 脚本透传 `EMBEDDING_*` | 决策点 A |
-| **P1 不依赖 embedding 的能力** | `parse-blueprint` / `summarize-recent` / `preview-prompt` / `review-consistency` / `enrich` 端点 + 客户端 + 契约 | 无 |
-| **P2 知识库 / RAG** | `knowledge/import·query·list·clear` + 向量库生命周期（按 projectId 隔离）| P0 |
-| **P3 完整编排生成** | `chapter_draft_full` + `finalize_full` job（替换/并存简化版） | P0、P2 |
+| **P1 不依赖 embedding 的能力** | ✅ **已完成（4/4）**：`review-consistency` / `enrich` / `parse-blueprint` / `summarize-recent` 端点 + 客户端 + 契约 + 测试。原 `preview-prompt` 经核实是 `build_chapter_prompt` 的内部步骤（读工作区文件 + RAG + LLM），已归入 P3。 | 无 |
+| **P2 知识库 / RAG** | ✅ **已完成**：`knowledge/import` · `query` · `clear`（按 projectId 隔离，复用 build_embedding_adapter + chroma）。`list/stats` 暂缓。 | P0 |
+| **P3 完整编排生成** | ✅ `chapter_draft_full` job 已落地（物化 blueprint 到项目工作区 → build_chapter_prompt + RAG + 摘要 → LLM；章节跨 job 累积）。`finalize_full` 待做。 | P0、P2 |
 | **P4 NestJS Studio 接线** | Studio 服务 + cron 编排完整流水线；前端调用 | P1–P3 |
 | **P5 收尾** | 灰度切换、文档、契约版本兼容、观测（已有 checkpoint） | — |
 

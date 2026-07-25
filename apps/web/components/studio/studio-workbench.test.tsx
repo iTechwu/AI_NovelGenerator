@@ -27,6 +27,9 @@ const {
   exportAdaptation,
   listAdaptationSourceDrift,
   markSourceSceneMappingsStale,
+  createAdaptationResnapshot,
+  listAdaptationReviewAnnotations,
+  upsertAdaptationReviewAnnotation,
   createAuthorChapterRevision,
   createChapterDraft,
   createFactChange,
@@ -80,6 +83,9 @@ const {
   exportAdaptation: vi.fn(),
   listAdaptationSourceDrift: vi.fn(),
   markSourceSceneMappingsStale: vi.fn(),
+  createAdaptationResnapshot: vi.fn(),
+  listAdaptationReviewAnnotations: vi.fn(),
+  upsertAdaptationReviewAnnotation: vi.fn(),
   createAuthorChapterRevision: vi.fn(),
   createChapterDraft: vi.fn(),
   createFactChange: vi.fn(),
@@ -138,6 +144,9 @@ vi.mock('@/lib/api/contracts/client', () => ({
     exportAdaptation,
     listAdaptationSourceDrift,
     markSourceSceneMappingsStale,
+    createAdaptationResnapshot,
+    listAdaptationReviewAnnotations,
+    upsertAdaptationReviewAnnotation,
     getBlueprint,
     getProjectOverview,
     getJob,
@@ -224,6 +233,9 @@ describe('StudioWorkbench', () => {
     exportAdaptation.mockReset();
     listAdaptationSourceDrift.mockReset();
     markSourceSceneMappingsStale.mockReset();
+    createAdaptationResnapshot.mockReset();
+    listAdaptationReviewAnnotations.mockReset();
+    upsertAdaptationReviewAnnotation.mockReset();
     createAuthorChapterRevision.mockReset();
     finalizeChapterRevision.mockReset();
     getBlueprint.mockReset();
@@ -319,6 +331,12 @@ describe('StudioWorkbench', () => {
       },
     });
     markSourceSceneMappingsStale.mockResolvedValue({ status: 500 });
+    createAdaptationResnapshot.mockResolvedValue({ status: 500 });
+    listAdaptationReviewAnnotations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 200 } },
+    });
+    upsertAdaptationReviewAnnotation.mockResolvedValue({ status: 500 });
     getChapterPlan.mockResolvedValue({ status: 404 });
     listChapterRevisions.mockResolvedValue({
       status: 200,
@@ -1284,6 +1302,62 @@ describe('StudioWorkbench', () => {
     });
   });
 
+  it('regenerates the immutable source snapshot from the workbench', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const scenePlanningAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'scene_planning' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [scenePlanningAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    listAdaptationSourceDrift.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          snapshotChapterCount: 2,
+          snapshotCreatedAt: '2026-07-24T02:00:00.000Z',
+          newChapters: [{ chapterNumber: 3, title: '失踪的证人' }],
+        },
+      },
+    });
+    createAdaptationResnapshot.mockResolvedValue({
+      status: 201,
+      body: { data: { ...scenePlanningAdaptation, status: 'scene_planning' } },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('来源新增 1 章');
+    fireEvent.click(screen.getByRole('button', { name: '生成新来源快照' }));
+
+    await waitFor(() => {
+      expect(createAdaptationResnapshot).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {},
+      });
+    });
+  });
+
   it('advances from scene planning into script writing', async () => {
     const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
     const scenePlanningAdaptation = {
@@ -1555,6 +1629,71 @@ describe('StudioWorkbench', () => {
     await screen.findByText('对照审阅');
     expect(screen.getByText(/雨声先于信件抵达。/)).toBeInTheDocument();
     expect(screen.getAllByText(/INT\. 码头 - 夜/).length).toBeGreaterThan(0);
+  });
+
+  it('saves a comparative-review verdict annotation', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const reviewReadyAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'review_ready' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 1,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [reviewReadyAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    upsertAdaptationReviewAnnotation.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          id: '9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d',
+          adaptationId,
+          episodeNumber: 1,
+          sceneNumber: 1,
+          verdict: 'faithful',
+          note: '场景与来源开场一致。',
+          createdAt: '2026-07-26T02:00:00.000Z',
+          updatedAt: '2026-07-26T02:00:00.000Z',
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('对照审阅');
+    fireEvent.change(screen.getByLabelText('标注备注'), {
+      target: { value: '场景与来源开场一致。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存标注' }));
+
+    await waitFor(() => {
+      expect(upsertAdaptationReviewAnnotation).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {
+          episodeNumber: 1,
+          sceneNumber: 1,
+          verdict: 'faithful',
+          note: '场景与来源开场一致。',
+        },
+      });
+    });
   });
 
   it('downloads an exported Fountain screenplay from the script writing stage', async () => {

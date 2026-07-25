@@ -540,6 +540,100 @@ class GenerationEngine:
             timeout=self._settings.timeout_seconds,
         )
 
+    # ---- Knowledge / RAG -------------------------------------------------------
+    # The vectorstore is project-scoped: <storage_root>/<project_id>/vectorstore/.
+    # It is shared across runs so imported lore/context outlives any single job.
+
+    def _knowledge_filepath(self, project_id: UUID) -> str:
+        return str(self._settings.storage_root / str(project_id))
+
+    def _require_embedding_adapter(self):
+        adapter = self._settings.build_embedding_adapter()
+        if adapter is None:
+            raise RuntimeError(
+                'Embedding is not configured (set EMBEDDING_ENDPOINT / EMBEDDING_APPKEY)'
+            )
+        return adapter
+
+    def import_knowledge(self, project_id: UUID, content: str) -> None:
+        """Split content into chunks and upsert into the project vectorstore."""
+        adapter = self._require_embedding_adapter()
+        from novel_generator.vectorstore_utils import update_vector_store
+        update_vector_store(adapter, content, self._knowledge_filepath(project_id))
+
+    def query_knowledge(self, project_id: UUID, query: str, k: int) -> str:
+        """Retrieve up to k relevant chunks for the query ('' if none/no store)."""
+        adapter = self._require_embedding_adapter()
+        from novel_generator.vectorstore_utils import get_relevant_context_from_vector_store
+        return get_relevant_context_from_vector_store(
+            adapter, query, self._knowledge_filepath(project_id), k
+        )
+
+    def clear_knowledge(self, project_id: UUID) -> bool:
+        """Remove the project vectorstore. False if there was nothing to clear."""
+        from novel_generator.vectorstore_utils import clear_vector_store
+        return clear_vector_store(self._knowledge_filepath(project_id))
+
+    def generate_chapter_draft_full(
+        self,
+        project,
+        blueprint,
+        chapter_plan,
+        run_id: UUID,
+        report: Callable[[int, str], None],
+    ) -> dict[str, Any]:
+        """Full orchestrated chapter draft: build_chapter_prompt (RAG + summary) + LLM.
+
+        Materializes the blueprint into the project-scoped workspace so the file-based
+        pipeline (which reads Novel_architecture/directory + prior chapters) works.
+        The workspace is shared across runs, so chapters accumulate: call this for
+        ch1, then ch2, ... and each later chapter sees prior chapters/chapter_*.txt.
+        """
+        if not self._settings.api_key:
+            raise RuntimeError('LLM_API_KEY must be configured')
+
+        from novel_generator.chapter import generate_chapter_draft
+
+        workspace = self._settings.storage_root / str(project.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        # Materialize blueprint (idempotent; overwrites so the latest confirmed inputs win).
+        (workspace / 'Novel_architecture.txt').write_text(blueprint.architecture, encoding='utf-8')
+        if getattr(blueprint, 'outline', ''):
+            (workspace / 'Novel_directory.txt').write_text(blueprint.outline, encoding='utf-8')
+
+        report(40, 'Building chapter prompt (context + RAG)')
+        s = self._settings
+        guidance = (project.guidance or '').strip()
+        if getattr(chapter_plan, 'goal', ''):
+            guidance = (guidance + ' | ' + chapter_plan.goal).strip(' |')
+
+        content = generate_chapter_draft(
+            api_key=s.api_key,
+            base_url=s.base_url,
+            model_name=s.model_chapter_draft,
+            filepath=str(workspace),
+            novel_number=chapter_plan.chapterNumber,
+            word_number=project.targetWordsPerChapter,
+            temperature=s.temperature,
+            user_guidance=guidance,
+            characters_involved=', '.join(chapter_plan.characters) if chapter_plan.characters else '',
+            key_items=getattr(chapter_plan, 'foreshadowing', '') or '',
+            scene_location=chapter_plan.location or '',
+            time_constraint=chapter_plan.timeConstraint or '',
+            embedding_api_key=s.embedding_appkey,
+            embedding_url=s.embedding_endpoint,
+            embedding_interface_format=s.embedding_interface_format,
+            embedding_model_name=s.embedding_model,
+            embedding_retrieval_k=s.embedding_retrieval_k,
+            interface_format=s.interface_format,
+            max_tokens=s.max_tokens,
+            timeout=s.timeout_seconds,
+        )
+        if not content.strip():
+            raise RuntimeError('Chapter draft generation returned empty content')
+        report(90, 'Chapter draft generated')
+        return {'chapterDraft': content}
+
     @staticmethod
     def _read_fact_changes(path: Path) -> list[dict[str, str | float]]:
         if not path.exists():

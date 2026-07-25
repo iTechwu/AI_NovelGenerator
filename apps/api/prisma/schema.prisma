@@ -271,6 +271,7 @@ enum StudioProjectEventType {
   GENERATION_STATUS        @map("generation_status")
   FINALIZATION_TASK_STATUS @map("finalization_task_status")
   FACT_CHANGE_DECISION     @map("fact_change_decision")
+  ADAPTATION_STATUS        @map("adaptation_status")
 
   @@map("studio_project_event_type")
 }
@@ -380,6 +381,16 @@ enum StudioScreenplayRevisionSource {
   AI     @map("ai")
 
   @@map("studio_screenplay_revision_source")
+}
+
+// PRD P13 对照审阅: the author's per-scene human verdict captured during
+// comparative review (faithful / needs revision / cut approved) plus a note.
+enum StudioReviewVerdict {
+  FAITHFUL       @map("faithful")
+  NEEDS_REVISION @map("needs_revision")
+  CUT_APPROVED   @map("cut_approved")
+
+  @@map("studio_review_verdict")
 }
 
 enum StudioFinalizationTaskStatus {
@@ -544,6 +555,7 @@ model StudioAdaptationProject {
   scenePlans          StudioScenePlan[]
   sourceMappings      StudioSourceSceneMapping[]
   screenplayRevisions StudioScreenplaySceneRevision[]
+  reviewAnnotations   StudioAdaptationReviewAnnotation[]
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([sourceProjectId, createdAt(sort: Desc)])
@@ -671,6 +683,24 @@ model StudioScreenplaySceneRevision {
   @@map("studio_screenplay_scene_revisions")
 }
 
+// PRD P13 对照审阅: one upsertable author verdict per planned scene, capturing
+// the human annotation produced during comparative review.
+model StudioAdaptationReviewAnnotation {
+  id            String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId  String            @map("adaptation_id") @db.Uuid
+  episodeNumber Int               @map("episode_number") @db.SmallInt
+  sceneNumber   Int               @map("scene_number") @db.SmallInt
+  verdict       StudioReviewVerdict
+  note          String            @db.Text
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  adaptation StudioAdaptationProject @relation(fields: [adaptationId], references: [id], onDelete: Cascade)
+
+  @@unique([adaptationId, episodeNumber, sceneNumber])
+  @@map("studio_adaptation_review_annotations")
+}
+
 // Standalone screenplay work deliberately has no adaptation or source-snapshot
 // relation. It is the persistent scene plan used by projects whose format is
 // `screenplay`; adaptation scene plans remain in StudioScenePlan above.
@@ -689,7 +719,6 @@ model StudioStandaloneScreenplayScene {
   revisions StudioStandaloneScreenplayRevision[]
 
   @@unique([projectId, episodeNumber, sceneNumber])
-  @@index([projectId, episodeNumber, sceneNumber])
   @@map("studio_standalone_screenplay_scenes")
 }
 

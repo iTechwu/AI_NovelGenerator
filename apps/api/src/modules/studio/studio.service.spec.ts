@@ -176,6 +176,12 @@ describe('StudioService', () => {
     list: jest.fn(),
     update: jest.fn(),
   };
+  const reviewAnnotationService = {
+    list: jest.fn(),
+    get: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  };
   const auditLogService = {
     logCreate: jest.fn(),
     logUpdate: jest.fn(),
@@ -223,6 +229,7 @@ describe('StudioService', () => {
       factService as never,
       reviewFindingService as never,
       factChangeService as never,
+      reviewAnnotationService as never,
       { execute: async <T>(callback: () => Promise<T>) => callback() } as never,
       auditLogService as never,
       { warn: jest.fn() } as never,
@@ -481,6 +488,12 @@ describe('StudioService', () => {
       { status: 'BLUEPRINT_REVIEW' },
     );
     expect(result.status).toBe('blueprint_review');
+    expect(projectEventService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'ADAPTATION_STATUS',
+        payload: { adaptationId, status: 'blueprint_review' },
+      }),
+    );
   });
 
   it('records a source-anchored decision only during adaptation blueprint review', async () => {
@@ -1210,6 +1223,13 @@ describe('StudioService', () => {
     );
     expect(revision).toMatchObject({ sceneId, version: 3, editSummary: '强化开场悬念' });
 
+    await expect(
+      service.createStandaloneScreenplayRevision(ownerId, projectId, sceneId, {
+        content: '林舟看向录像机。',
+      }),
+    ).rejects.toMatchObject({});
+    expect(standaloneScreenplayRevisionService.create).toHaveBeenCalledTimes(1);
+
     projectService.getById.mockResolvedValue({ ...screenplayProject, format: 'novel' });
     await expect(
       service.listStandaloneScreenplayScenes(ownerId, projectId, { page: 1, limit: 20 }),
@@ -1305,6 +1325,125 @@ describe('StudioService', () => {
       { status: 'STALE' },
     );
     expect(result).toEqual({ markedStaleCount: 4 });
+  });
+
+  it('generates a new immutable snapshot and repoints the adaptation on resnapshot', async () => {
+    const newSnapshotId = '8f2c4d6e-9a01-4b3c-8d2e-1b5f6a7c8d9f';
+    const baseAdaptation = {
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      rightsConfirmedAt: createdAt,
+      status: 'SCENE_PLANNING',
+      createdAt,
+      updatedAt: createdAt,
+    };
+    adaptationProjectService.getById
+      .mockResolvedValueOnce({ ...baseAdaptation, currentSnapshotId: snapshotId })
+      .mockResolvedValueOnce({ ...baseAdaptation, currentSnapshotId: newSnapshotId });
+    projectService.getById.mockResolvedValue({
+      id: projectId,
+      title: '雾港来信',
+      chapterCount: 20,
+      updatedAt: createdAt,
+    });
+    chapterFinalPointerService.list.mockResolvedValue({
+      list: [{ chapterNumber: 1, revisionId: 'rev-1' }],
+      total: 1,
+      page: 1,
+      limit: 20,
+    });
+    chapterRevisionService.getById.mockResolvedValue({
+      id: 'rev-1',
+      chapterNumber: 1,
+      chapterPlanId: 'plan-1',
+      content: '雨声先于信件抵达。',
+      contentHash: 'a'.repeat(64),
+      wordCount: 8,
+    });
+    chapterPlanService.getById.mockResolvedValue({
+      chapterNumber: 1,
+      title: '迟到的信件',
+      projectId,
+    });
+    adaptationSourceSnapshotService.create.mockResolvedValue({
+      id: newSnapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 1,
+      createdAt,
+    });
+    adaptationSourceChapterService.createMany.mockResolvedValue({ count: 1 });
+    sourceSceneMappingService.updateMany.mockResolvedValue({ count: 2 });
+
+    const result = await service.createAdaptationResnapshot(ownerId, adaptationId);
+
+    expect(adaptationSourceSnapshotService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceProjectTitle: '雾港来信', sourceChapterCount: 1 }),
+    );
+    expect(adaptationProjectService.update).toHaveBeenCalledWith(
+      { id: adaptationId },
+      { currentSnapshot: { connect: { id: newSnapshotId } } },
+    );
+    expect(sourceSceneMappingService.updateMany).toHaveBeenCalledWith(
+      { adaptationId, status: { not: 'STALE' } },
+      { status: 'STALE' },
+    );
+    expect(result.sourceSnapshot.id).toBe(newSnapshotId);
+  });
+
+  it('upserts a comparative-review verdict annotation only during review', async () => {
+    const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      currentSnapshotId: snapshotId,
+      targetFormat: 'SERIES',
+      status: 'REVIEW_READY',
+    });
+    scenePlanService.get.mockResolvedValue({
+      id: scenePlanId,
+      adaptationId,
+      episodeNumber: 1,
+      sceneOutline: [{ sceneNumber: 1, title: '码头重逢', sourceChapterIds: [] }],
+    });
+    reviewAnnotationService.get.mockResolvedValue(null);
+    reviewAnnotationService.create.mockResolvedValue({
+      id: '9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d',
+      adaptationId,
+      episodeNumber: 1,
+      sceneNumber: 1,
+      verdict: 'FAITHFUL',
+      note: '场景与来源开场一致。',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const result = await service.upsertAdaptationReviewAnnotation(ownerId, adaptationId, {
+      episodeNumber: 1,
+      sceneNumber: 1,
+      verdict: 'faithful',
+      note: '场景与来源开场一致。',
+    });
+
+    expect(reviewAnnotationService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        verdict: 'FAITHFUL',
+        episodeNumber: 1,
+        sceneNumber: 1,
+        note: '场景与来源开场一致。',
+      }),
+    );
+    expect(result).toMatchObject({ verdict: 'faithful', episodeNumber: 1, sceneNumber: 1 });
   });
 
   it('projects a dispatch failure after persisting the project and queued run', async () => {

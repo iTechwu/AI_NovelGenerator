@@ -29,6 +29,7 @@ import {
   StudioScenePlanService,
   StudioSourceSceneMappingService,
   StudioScreenplaySceneRevisionService,
+  StudioAdaptationReviewAnnotationService,
   StudioStandaloneScreenplaySceneService,
   StudioStandaloneScreenplayRevisionService,
 } from '@app/db';
@@ -50,12 +51,13 @@ import type {
   StudioScenePlan,
   StudioSourceSceneMapping,
   StudioScreenplaySceneRevision,
+  StudioAdaptationReviewAnnotation,
   StudioStandaloneScreenplayScene,
   StudioStandaloneScreenplayRevision,
   Prisma,
 } from '@prisma/client';
 import { CommonErrorCode } from '@repo/contracts/errors';
-import { StudioProjectImportPreviewDataSchema } from '@repo/contracts';
+import { analyzeFountain, StudioProjectImportPreviewDataSchema } from '@repo/contracts';
 import type {
   CreateStudioProject,
   PreviewStudioProjectImport,
@@ -131,6 +133,10 @@ import type {
   StudioAdaptationExportQuery,
   StudioAdaptationSourceDrift,
   StudioAdaptationMarkStaleResponse,
+  StudioAdaptationReviewAnnotation as StudioAdaptationReviewAnnotationResponse,
+  UpsertStudioAdaptationReviewAnnotation,
+  StudioAdaptationReviewAnnotationListQuery,
+  StudioAdaptationReviewAnnotationListResponse,
   SaveStudioStandaloneScreenplayScene,
   StudioStandaloneScreenplayScene as StudioStandaloneScreenplaySceneResponse,
   StudioStandaloneScreenplaySceneListQuery,
@@ -227,6 +233,7 @@ export class StudioService {
     private readonly factService: StudioFactService,
     private readonly reviewFindingService: StudioReviewFindingService,
     private readonly factChangeService: StudioFactChangeService,
+    private readonly reviewAnnotationService: StudioAdaptationReviewAnnotationService,
     private readonly unitOfWork: UnitOfWorkService,
     private readonly auditLogService: AuditLogService,
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
@@ -632,6 +639,11 @@ export class StudioService {
       { status: 'blueprint_review' },
       { sourceProjectId: adaptation.sourceProjectId, action: 'confirm' },
     );
+    await this.emitAdaptationStatusEvent(
+      adaptation.sourceProjectId,
+      adaptationId,
+      'blueprint_review',
+    );
     return this.toAdaptation(updated, snapshot);
   }
 
@@ -789,6 +801,11 @@ export class StudioService {
     await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
       status: 'scene_planning',
     });
+    await this.emitAdaptationStatusEvent(
+      adaptation.sourceProjectId,
+      adaptationId,
+      'scene_planning',
+    );
     return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
   }
 
@@ -821,6 +838,11 @@ export class StudioService {
     await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
       status: 'script_writing',
     });
+    await this.emitAdaptationStatusEvent(
+      adaptation.sourceProjectId,
+      adaptationId,
+      'script_writing',
+    );
     return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
   }
 
@@ -848,6 +870,11 @@ export class StudioService {
     await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
       status: 'review_ready',
     });
+    await this.emitAdaptationStatusEvent(
+      adaptation.sourceProjectId,
+      adaptationId,
+      'review_ready',
+    );
     return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
   }
 
@@ -868,6 +895,11 @@ export class StudioService {
     await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
       status: 'deliverable',
     });
+    await this.emitAdaptationStatusEvent(
+      adaptation.sourceProjectId,
+      adaptationId,
+      'deliverable',
+    );
     return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
   }
 
@@ -1346,6 +1378,10 @@ export class StudioService {
     input: CreateStudioStandaloneScreenplayRevision,
   ): Promise<StudioStandaloneScreenplayRevisionResponse> {
     await this.getOwnedStandaloneScreenplayScene(userId, projectId, sceneId);
+    const fountain = analyzeFountain(input.content);
+    if (!fountain.isValid) {
+      throw apiError(CommonErrorCode.BadRequest, { message: fountain.errors[0] });
+    }
     const revision = await this.unitOfWork.execute(async () => {
       const { list } = await this.standaloneScreenplayRevisionService.list(
         { sceneId },
@@ -1573,6 +1609,82 @@ export class StudioService {
     );
     const updated = await this.getOwnedAdaptation(userId, adaptationId);
     return this.toAdaptation(updated, snapshot);
+  }
+
+  async listAdaptationReviewAnnotations(
+    userId: string,
+    adaptationId: string,
+    query: StudioAdaptationReviewAnnotationListQuery,
+  ): Promise<StudioAdaptationReviewAnnotationListResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const annotations = await this.reviewAnnotationService.list(
+      { adaptationId },
+      {
+        page: query.page,
+        limit: query.limit,
+        orderBy: [{ episodeNumber: 'asc' }, { sceneNumber: 'asc' }],
+      },
+    );
+    return {
+      ...annotations,
+      list: annotations.list.map((annotation) => this.toReviewAnnotation(annotation)),
+    };
+  }
+
+  async upsertAdaptationReviewAnnotation(
+    userId: string,
+    adaptationId: string,
+    input: UpsertStudioAdaptationReviewAnnotation,
+  ): Promise<StudioAdaptationReviewAnnotationResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'REVIEW_READY' && adaptation.status !== 'DELIVERABLE') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '对照审阅标注仅在对照审阅或可交付阶段可写。',
+      });
+    }
+    // Verify the scene exists in a confirmed plan before accepting a verdict,
+    // mirroring the screenplay-revision anchor check.
+    const scenePlan = await this.scenePlanService.get({
+      adaptationId,
+      episodeNumber: input.episodeNumber,
+    });
+    if (!scenePlan) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集场景计划不存在，无法标注。',
+      });
+    }
+    const outline = (scenePlan.sceneOutline ?? []) as StudioScenePlanSceneOutline;
+    if (!outline.some((scene) => scene.sceneNumber === input.sceneNumber)) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集不存在此场景编号，无法标注。',
+      });
+    }
+    const verdict = input.verdict.toUpperCase() as 'FAITHFUL' | 'NEEDS_REVISION' | 'CUT_APPROVED';
+    const existing = await this.reviewAnnotationService.get({
+      adaptationId,
+      episodeNumber: input.episodeNumber,
+      sceneNumber: input.sceneNumber,
+    });
+    const annotation = existing
+      ? await this.reviewAnnotationService.update(
+          { id: existing.id },
+          { verdict, note: input.note },
+        )
+      : await this.reviewAnnotationService.create({
+          adaptation: { connect: { id: adaptationId } },
+          episodeNumber: input.episodeNumber,
+          sceneNumber: input.sceneNumber,
+          verdict,
+          note: input.note,
+        });
+    await this.auditLogService.logUpdate(
+      'studio.adaptation_review_annotation',
+      annotation.id,
+      userId,
+      { verdict: input.verdict },
+      { adaptationId, episodeNumber: input.episodeNumber, sceneNumber: input.sceneNumber },
+    );
+    return this.toReviewAnnotation(annotation);
   }
 
   async previewProjectImport(
@@ -1961,6 +2073,7 @@ export class StudioService {
                 GENERATION_STATUS: 'generation_status',
                 FINALIZATION_TASK_STATUS: 'finalization_task_status',
                 FACT_CHANGE_DECISION: 'fact_change_decision',
+                ADAPTATION_STATUS: 'adaptation_status',
               } as const
             )[event.type],
             payload: event.payload as Record<string, unknown>,
@@ -3268,6 +3381,21 @@ export class StudioService {
     return adaptation;
   }
 
+  private async emitAdaptationStatusEvent(
+    sourceProjectId: string,
+    adaptationId: string,
+    status: string,
+  ): Promise<void> {
+    // Adaptation projects live inside the source novel's workbench, so project
+    // the state change onto the source project's event stream. The workbench
+    // SSE listener reloads adaptation state when it receives this event.
+    await this.projectEventService.create({
+      project: { connect: { id: sourceProjectId } },
+      type: 'ADAPTATION_STATUS',
+      payload: { adaptationId, status },
+    });
+  }
+
   private async getAdaptationSnapshot(
     currentSnapshotId: string | null,
   ): Promise<StudioAdaptationSourceSnapshot> {
@@ -4004,6 +4132,26 @@ export class StudioService {
     };
   }
 
+  private toReviewAnnotation(
+    annotation: StudioAdaptationReviewAnnotation,
+  ): StudioAdaptationReviewAnnotationResponse {
+    const verdict = {
+      FAITHFUL: 'faithful',
+      NEEDS_REVISION: 'needs_revision',
+      CUT_APPROVED: 'cut_approved',
+    } as const;
+    return {
+      id: annotation.id,
+      adaptationId: annotation.adaptationId,
+      episodeNumber: annotation.episodeNumber,
+      sceneNumber: annotation.sceneNumber,
+      verdict: verdict[annotation.verdict],
+      note: annotation.note,
+      createdAt: annotation.createdAt.toISOString(),
+      updatedAt: annotation.updatedAt.toISOString(),
+    };
+  }
+
   private toAdaptationDecisionType(
     type: CreateStudioAdaptationDecision['type'],
   ): 'CUT' | 'MERGE' | 'REORDER' | 'POV_CHANGE' | 'EXPAND' {
@@ -4168,6 +4316,7 @@ export class StudioService {
           GENERATION_STATUS: 'generation_status',
           FINALIZATION_TASK_STATUS: 'finalization_task_status',
           FACT_CHANGE_DECISION: 'fact_change_decision',
+          ADAPTATION_STATUS: 'adaptation_status',
         } as const
       )[event.type],
       payload: event.payload as Record<string, unknown>,

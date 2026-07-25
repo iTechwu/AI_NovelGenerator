@@ -24,6 +24,7 @@ import {
   StudioScenePlanModule,
   StudioSourceSceneMappingModule,
   StudioScreenplaySceneRevisionModule,
+  StudioAdaptationReviewAnnotationModule,
   StudioStandaloneScreenplaySceneModule,
   StudioStandaloneScreenplayRevisionModule,
 } from '@app/db';
@@ -48,6 +49,7 @@ import { StudioService } from './studio.service';
     StudioScenePlanModule,
     StudioSourceSceneMappingModule,
     StudioScreenplaySceneRevisionModule,
+  StudioAdaptationReviewAnnotationModule,
     StudioStandaloneScreenplaySceneModule,
     StudioStandaloneScreenplayRevisionModule,
     StudioGenerationRunModule,

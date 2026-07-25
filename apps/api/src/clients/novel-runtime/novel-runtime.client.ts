@@ -11,6 +11,11 @@ import {
   ChapterEnrichResultSchema,
   ChapterSummarizeRequestSchema,
   ChapterSummarizeResultSchema,
+  KnowledgeImportRequestSchema,
+  KnowledgeImportResultSchema,
+  KnowledgeQueryRequestSchema,
+  KnowledgeQueryResultSchema,
+  KnowledgeClearResultSchema,
   ConsistencyReviewRequestSchema,
   ConsistencyReviewResultSchema,
   CreateStudioProjectSchema,
@@ -23,6 +28,11 @@ import {
   type ChapterEnrichResult,
   type ChapterSummarizeRequest,
   type ChapterSummarizeResult,
+  type KnowledgeImportRequest,
+  type KnowledgeImportResult,
+  type KnowledgeQueryRequest,
+  type KnowledgeQueryResult,
+  type KnowledgeClearResult,
   type ConsistencyReviewRequest,
   type ConsistencyReviewResult,
   type CreateStudioChapterDraft,
@@ -37,7 +47,7 @@ const InternalCreateJobSchema = z.object({
 });
 
 const InternalCreateChapterDraftJobSchema = InternalCreateJobSchema.extend({
-  kind: z.literal('chapter_draft'),
+  kind: z.enum(['chapter_draft', 'chapter_draft_full']),
   blueprint: StudioBlueprintSchema,
   chapterPlan: StudioChapterPlanSchema,
   prompt: z.string().max(2_000),
@@ -179,6 +189,20 @@ export class NovelRuntimeClient {
     return this.request('post', '/v1/chapters/summarize-recent', body, ChapterSummarizeResultSchema, undefined, this.llmTimeoutMs);
   }
 
+  async importKnowledge(input: KnowledgeImportRequest): Promise<KnowledgeImportResult> {
+    const body = KnowledgeImportRequestSchema.parse(input);
+    return this.request('post', '/v1/knowledge/import', body, KnowledgeImportResultSchema, undefined, this.llmTimeoutMs);
+  }
+
+  async queryKnowledge(input: KnowledgeQueryRequest): Promise<KnowledgeQueryResult> {
+    const body = KnowledgeQueryRequestSchema.parse(input);
+    return this.request('post', '/v1/knowledge/query', body, KnowledgeQueryResultSchema, undefined, this.llmTimeoutMs);
+  }
+
+  async clearKnowledge(projectId: string): Promise<KnowledgeClearResult> {
+    return this.request('delete', `/v1/knowledge/${projectId}`, undefined, KnowledgeClearResultSchema);
+  }
+
   async createChapterDraftJob(
     ownerId: string,
     projectId: string,
@@ -200,8 +224,36 @@ export class NovelRuntimeClient {
     return this.request('post', '/v1/generation-jobs', body, GenerationJobSchema);
   }
 
+  /**
+   * Full orchestrated chapter draft: the Python runtime materializes the blueprint
+   * into a project-scoped workspace and runs the complete pipeline
+   * (build_chapter_prompt → RAG + recent-chapter summary → LLM). Chapters accumulate
+   * in the workspace, so calling this sequentially for ch1, ch2, ... gives each
+   * later chapter access to its predecessors.
+   */
+  async createChapterDraftFullJob(
+    ownerId: string,
+    projectId: string,
+    jobId: string,
+    project: CreateStudioProject,
+    blueprint: z.infer<typeof StudioBlueprintSchema>,
+    chapterPlan: z.infer<typeof StudioChapterPlanSchema>,
+    input: CreateStudioChapterDraft,
+  ): Promise<GenerationJob> {
+    const body = InternalCreateChapterDraftJobSchema.parse({
+      ownerId,
+      jobId,
+      project: { ...project, id: projectId },
+      kind: 'chapter_draft_full',
+      blueprint,
+      chapterPlan,
+      prompt: input.prompt,
+    });
+    return this.request('post', '/v1/generation-jobs', body, GenerationJobSchema);
+  }
+
   private async request<T>(
-    method: 'get' | 'post',
+    method: 'get' | 'post' | 'delete',
     path: string,
     data: unknown,
     schema: z.ZodType<T>,

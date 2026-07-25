@@ -194,7 +194,7 @@ export function StudioProjectWorkspace({
     publishProjectNavigationState({
       projectId,
       projectFormat: project?.format,
-      hasProject: true,
+      hasProject: Boolean(project),
       hasBlueprint: Boolean(blueprint),
       hasChapterWorkspace: blueprint?.status === 'confirmed',
       hasDraftWorkspace: revisions.length > 0,

@@ -301,7 +301,6 @@ export function AppSidebar() {
   const isItemAvailable = useCallback(
     (item: NavItem) => {
       if (item.availability === 'screenplay') return projectNavigation.projectFormat === 'screenplay';
-      if (item.workspaceSection && routeProjectId) return true;
       switch (item.availability) {
         case 'project':
           return projectNavigation.hasProject;
@@ -317,7 +316,7 @@ export function AppSidebar() {
           return true;
       }
     },
-    [projectNavigation, routeProjectId],
+    [projectNavigation],
   );
 
   const resolveItemHref = useCallback(

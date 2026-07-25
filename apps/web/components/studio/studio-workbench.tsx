@@ -60,6 +60,7 @@ import type {
   StudioSourceSceneMapping,
   StudioScreenplaySceneRevision,
   StudioAdaptationSourceDrift,
+  StudioAdaptationReviewAnnotation,
   StudioProjectListResponse,
   StudioProjectOverview,
   StudioProjectImportPreview,
@@ -442,7 +443,19 @@ export function StudioWorkbench({
   const [sourceDrift, setSourceDrift] = useState<StudioAdaptationSourceDrift | null>(null);
   const [isLoadingSourceDrift, setIsLoadingSourceDrift] = useState(false);
   const [isMarkingMappingsStale, setIsMarkingMappingsStale] = useState(false);
+  const [isCreatingResnapshot, setIsCreatingResnapshot] = useState(false);
   const [sourceDriftError, setSourceDriftError] = useState<string | null>(null);
+  const [reviewAnnotations, setReviewAnnotations] = useState<StudioAdaptationReviewAnnotation[]>(
+    [],
+  );
+  const [annotationDraft, setAnnotationDraft] = useState<{
+    episodeNumber: number;
+    sceneNumber: number;
+    verdict: 'faithful' | 'needs_revision' | 'cut_approved';
+    note: string;
+  }>({ episodeNumber: 1, sceneNumber: 1, verdict: 'faithful', note: '' });
+  const [isSavingAnnotation, setIsSavingAnnotation] = useState(false);
+  const [annotationError, setAnnotationError] = useState<string | null>(null);
   const selectedAdaptation = adaptations.find((item) => item.id === selectedAdaptationId) ?? null;
   const isAdaptationBriefEditable =
     !selectedAdaptation || selectedAdaptation.status === 'brief_draft';
@@ -641,6 +654,79 @@ export function StudioWorkbench({
     }
   };
 
+  const createResnapshot = async () => {
+    if (!selectedAdaptation) return;
+    setIsCreatingResnapshot(true);
+    setSourceDriftError(null);
+    try {
+      const response = await studioClient.createAdaptationResnapshot({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {},
+      });
+      if (response.status === 201) {
+        setAdaptations((current) =>
+          current.map((item) => (item.id === response.body.data.id ? response.body.data : item)),
+        );
+        await Promise.all([
+          loadSourceSceneMappings(selectedAdaptation.id),
+          loadSourceDrift(selectedAdaptation.id),
+        ]);
+      } else setSourceDriftError('生成新来源快照失败，请稍后重试。');
+    } catch {
+      setSourceDriftError('生成新来源快照失败，请稍后重试。');
+    } finally {
+      setIsCreatingResnapshot(false);
+    }
+  };
+
+  const loadReviewAnnotations = useCallback(async (adaptationId: string) => {
+    try {
+      const response = await studioClient.listAdaptationReviewAnnotations({
+        params: { adaptationId },
+        query: { page: 1, limit: 200 },
+      });
+      if (response.status === 200) setReviewAnnotations(response.body.data.list);
+    } catch {
+      // Annotations are supplemental; surface nothing heavy on load failure.
+    }
+  }, []);
+
+  const saveReviewAnnotation = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedAdaptation) return;
+    if (!annotationDraft.note.trim()) return;
+    setIsSavingAnnotation(true);
+    setAnnotationError(null);
+    try {
+      const response = await studioClient.upsertAdaptationReviewAnnotation({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {
+          episodeNumber: annotationDraft.episodeNumber,
+          sceneNumber: annotationDraft.sceneNumber,
+          verdict: annotationDraft.verdict,
+          note: annotationDraft.note.trim(),
+        },
+      });
+      if (response.status === 200) {
+        setReviewAnnotations((current) => {
+          const key = (item: StudioAdaptationReviewAnnotation) =>
+            `${item.episodeNumber}-${item.sceneNumber}`;
+          const others = current.filter(
+            (item) => key(item) !== key(response.body.data),
+          );
+          return [...others, response.body.data].sort(
+            (a, b) => a.episodeNumber - b.episodeNumber || a.sceneNumber - b.sceneNumber,
+          );
+        });
+        setAnnotationDraft((current) => ({ ...current, note: '' }));
+      } else setAnnotationError('标注保存失败，请核对集数与场景编号。');
+    } catch {
+      setAnnotationError('标注保存失败，请稍后重试。');
+    } finally {
+      setIsSavingAnnotation(false);
+    }
+  };
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadProjects(), 0);
     return () => window.clearTimeout(timer);
@@ -718,6 +804,11 @@ export function StudioWorkbench({
     } else {
       setSourceDrift(null);
     }
+    if ((status === 'review_ready' || status === 'deliverable') && adaptationId) {
+      void loadReviewAnnotations(adaptationId);
+    } else {
+      setReviewAnnotations([]);
+    }
   }, [
     selectedAdaptation,
     loadAdaptationDecisions,
@@ -725,6 +816,7 @@ export function StudioWorkbench({
     loadSourceSceneMappings,
     loadScreenplayRevisions,
     loadSourceDrift,
+    loadReviewAnnotations,
   ]);
 
   useEffect(() => {
@@ -739,10 +831,20 @@ export function StudioWorkbench({
         );
         url.searchParams.set('access_token', token);
         eventSource = new EventSource(url.toString(), { withCredentials: true });
-        eventSource.addEventListener(
-          'studio-project-event',
-          () => void loadProjectStatus(activeProjectId),
-        );
+        eventSource.addEventListener('studio-project-event', (event) => {
+          void loadProjectStatus(activeProjectId);
+          // Adaptation state changes are projected as ADAPTATION_STATUS events on
+          // the source project stream; refresh adaptations so a background/other-tab
+          // change reflects in this workbench.
+          try {
+            const payload = JSON.parse((event as MessageEvent).data ?? '{}');
+            if (payload?.type === 'ADAPTATION_STATUS' || payload?.payload?.type === 'ADAPTATION_STATUS') {
+              void loadAdaptations(activeProjectId);
+            }
+          } catch {
+            void loadAdaptations(activeProjectId);
+          }
+        });
       })
       .catch(() => undefined);
     return () => {
@@ -2189,6 +2291,8 @@ export function StudioWorkbench({
   };
 
   const pendingFactChanges = factChanges.some((change) => change.status === 'proposed');
+  const activeProjectFormat =
+    projects.find((item) => item.id === activeProjectId)?.format ?? job?.project.format;
   const finalizationBlockedReason = !selectedRevision
     ? '请选择一个章节草稿。'
     : selectedRevision.status === 'finalized'
@@ -2204,6 +2308,7 @@ export function StudioWorkbench({
   useEffect(() => {
     publishProjectNavigationState({
       projectId: activeProjectId ?? undefined,
+      projectFormat: activeProjectFormat,
       hasProject: Boolean(activeProjectId),
       hasBlueprint: Boolean(blueprint),
       hasChapterWorkspace: Boolean(
@@ -2212,7 +2317,14 @@ export function StudioWorkbench({
       hasDraftWorkspace: Boolean(selectedRevision),
       hasAdaptationSource: Boolean(projectOverview && projectOverview.finalizedChapterCount > 0),
     });
-  }, [activeProjectId, blueprint, isEditingConfirmedBlueprint, projectOverview, selectedRevision]);
+  }, [
+    activeProjectFormat,
+    activeProjectId,
+    blueprint,
+    isEditingConfirmedBlueprint,
+    projectOverview,
+    selectedRevision,
+  ]);
 
   useEffect(
     () => () => {
@@ -3226,6 +3338,20 @@ export function StudioWorkbench({
                                       )}
                                       标记溯源待复核
                                     </Button>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={isCreatingResnapshot}
+                                      onClick={() => void createResnapshot()}
+                                    >
+                                      {isCreatingResnapshot ? (
+                                        <LoaderCircle className="animate-spin" />
+                                      ) : (
+                                        <Plus />
+                                      )}
+                                      生成新来源快照
+                                    </Button>
                                   </div>
                                 )}
                               </div>
@@ -3736,6 +3862,103 @@ export function StudioWorkbench({
                                   );
                                 })}
                               </ul>
+                              <form
+                                className="mt-2 grid gap-3 rounded-md border p-3"
+                                onSubmit={saveReviewAnnotation}
+                              >
+                                <span className="text-xs font-medium text-muted-foreground">
+                                  记录场景裁决
+                                </span>
+                                <div className="grid gap-3 sm:grid-cols-[100px_100px_160px_1fr]">
+                                  <Input
+                                    aria-label="标注集数"
+                                    type="number"
+                                    min={1}
+                                    max={100}
+                                    value={annotationDraft.episodeNumber}
+                                    onChange={(event) =>
+                                      setAnnotationDraft((current) => ({
+                                        ...current,
+                                        episodeNumber: Number(event.target.value),
+                                      }))
+                                    }
+                                    required
+                                  />
+                                  <Input
+                                    aria-label="标注场景"
+                                    type="number"
+                                    min={1}
+                                    max={200}
+                                    value={annotationDraft.sceneNumber}
+                                    onChange={(event) =>
+                                      setAnnotationDraft((current) => ({
+                                        ...current,
+                                        sceneNumber: Number(event.target.value),
+                                      }))
+                                    }
+                                    required
+                                  />
+                                  <select
+                                    aria-label="裁决"
+                                    className="h-9 rounded-md border bg-transparent px-2 text-xs"
+                                    value={annotationDraft.verdict}
+                                    onChange={(event) =>
+                                      setAnnotationDraft((current) => ({
+                                        ...current,
+                                        verdict: event.target.value as
+                                          | 'faithful'
+                                          | 'needs_revision'
+                                          | 'cut_approved',
+                                      }))
+                                    }
+                                  >
+                                    <option value="faithful">忠实</option>
+                                    <option value="needs_revision">需修改</option>
+                                    <option value="cut_approved">认可删改</option>
+                                  </select>
+                                  <Input
+                                    aria-label="标注备注"
+                                    value={annotationDraft.note}
+                                    onChange={(event) =>
+                                      setAnnotationDraft((current) => ({
+                                        ...current,
+                                        note: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={10000}
+                                    placeholder="场景裁决备注"
+                                  />
+                                </div>
+                                {annotationError && (
+                                  <p className="text-xs text-destructive" role="alert">
+                                    {annotationError}
+                                  </p>
+                                )}
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={isSavingAnnotation || !annotationDraft.note.trim()}
+                                  >
+                                    {isSavingAnnotation ? (
+                                      <LoaderCircle className="animate-spin" />
+                                    ) : (
+                                      <Save />
+                                    )}
+                                    保存标注
+                                  </Button>
+                                </div>
+                              </form>
+                              {reviewAnnotations.length > 0 && (
+                                <ul className="mt-1 grid gap-1 text-xs text-muted-foreground">
+                                  {reviewAnnotations.map((annotation) => (
+                                    <li
+                                      key={annotation.id}
+                                    >{`第 ${annotation.episodeNumber} 集 · 场景 ${annotation.sceneNumber}：${annotation.verdict} — ${annotation.note}`}</li>
+                                  ))}
+                                </ul>
+                              )}
                             </div>
                           )}
                         </section>

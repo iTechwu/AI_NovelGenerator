@@ -56,14 +56,14 @@ class CreateJobRequest(BaseModel):
     ownerId: UUID
     jobId: UUID
     project: ProjectInput
-    kind: Literal['blueprint', 'chapter_draft'] = 'blueprint'
+    kind: Literal['blueprint', 'chapter_draft', 'chapter_draft_full'] = 'blueprint'
     blueprint: 'BlueprintInput | None' = None
     chapterPlan: 'ChapterPlanInput | None' = None
     prompt: str = Field(default='', max_length=2_000)
 
     @model_validator(mode='after')
     def require_confirmed_inputs_for_chapter_draft(self):
-        if self.kind == 'chapter_draft' and (not self.blueprint or not self.chapterPlan):
+        if self.kind in ('chapter_draft', 'chapter_draft_full') and (not self.blueprint or not self.chapterPlan):
             raise ValueError('chapter_draft requires blueprint and chapterPlan')
         return self
 
@@ -95,7 +95,7 @@ class GenerationJob(BaseModel):
     id: UUID
     ownerId: UUID
     project: ProjectSummary
-    kind: Literal['blueprint', 'chapter_draft'] = 'blueprint'
+    kind: Literal['blueprint', 'chapter_draft', 'chapter_draft_full'] = 'blueprint'
     blueprint: BlueprintInput | None = None
     chapterPlan: ChapterPlanInput | None = None
     prompt: str = ''
@@ -200,6 +200,29 @@ class ChapterSummarizeResult(BaseModel):
     summary: str
 
 
+class KnowledgeImportRequest(BaseModel):
+    projectId: UUID
+    content: str = Field(min_length=1, max_length=200_000)
+
+
+class KnowledgeImportResult(BaseModel):
+    imported: bool = True
+
+
+class KnowledgeQueryRequest(BaseModel):
+    projectId: UUID
+    query: str = Field(min_length=1, max_length=2_000)
+    k: int | None = Field(default=None, ge=1, le=20)
+
+
+class KnowledgeQueryResult(BaseModel):
+    context: str
+
+
+class KnowledgeClearResult(BaseModel):
+    cleared: bool
+
+
 # Load backend/.env so the runtime picks up LLM_* / NOVEL_RUNTIME_* whether it is
 # launched via `pnpm start` (scripts/start-local-services.js) or `uvicorn` directly.
 # override=False (default): a real process env var always wins over the file.
@@ -293,6 +316,17 @@ async def run_job(job_id: UUID) -> None:
                 job.blueprint,
                 job.chapterPlan,
                 job.prompt,
+                job.id,
+                lambda progress, step: update_job(job, progress, step),
+            )
+        elif job.kind == 'chapter_draft_full':
+            if not job.blueprint or not job.chapterPlan:
+                raise RuntimeError('Full chapter draft job is missing confirmed inputs')
+            artifact = await asyncio.to_thread(
+                engine.generate_chapter_draft_full,
+                job.project,
+                job.blueprint,
+                job.chapterPlan,
                 job.id,
                 lambda progress, step: update_job(job, progress, step),
             )
@@ -503,6 +537,36 @@ async def summarize_recent_chapters(
         request.nextChapterInfo,
     )
     return ChapterSummarizeResult(summary=summary)
+
+
+@app.post('/v1/knowledge/import', response_model=KnowledgeImportResult)
+async def import_knowledge(
+    request: KnowledgeImportRequest,
+    _: None = Depends(require_internal_access),
+) -> KnowledgeImportResult:
+    await asyncio.to_thread(engine.import_knowledge, request.projectId, request.content)
+    return KnowledgeImportResult()
+
+
+@app.post('/v1/knowledge/query', response_model=KnowledgeQueryResult)
+async def query_knowledge(
+    request: KnowledgeQueryRequest,
+    _: None = Depends(require_internal_access),
+) -> KnowledgeQueryResult:
+    k = request.k if request.k is not None else settings.embedding_retrieval_k
+    context = await asyncio.to_thread(
+        engine.query_knowledge, request.projectId, request.query, k
+    )
+    return KnowledgeQueryResult(context=context)
+
+
+@app.delete('/v1/knowledge/{project_id}', response_model=KnowledgeClearResult)
+async def clear_knowledge(
+    project_id: UUID,
+    _: None = Depends(require_internal_access),
+) -> KnowledgeClearResult:
+    cleared = await asyncio.to_thread(engine.clear_knowledge, project_id)
+    return KnowledgeClearResult(cleared=cleared)
 
 
 @app.post('/v1/generation-jobs/{job_id}/retry', response_model=GenerationJob, status_code=status.HTTP_202_ACCEPTED)

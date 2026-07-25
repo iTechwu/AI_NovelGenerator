@@ -8,6 +8,7 @@ export * from './base';
 
 // Zod schemas
 export * from './schemas';
+export * from './utils/fountain';
 
 // API contracts
 export * from './api';

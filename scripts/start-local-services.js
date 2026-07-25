@@ -82,7 +82,9 @@ const services = [
     name: 'runtime',
     port: 18080,
     command: 'uv',
-    args: ['run', 'uvicorn', 'runtime.api:app', '--host', '127.0.0.1', '--port', '18080'],
+    // --extra retrieval: knowledge/RAG capabilities (chromadb + numpy + langchain-chroma).
+    // The base install stays light; the runtime pulls these in because it drives full orchestration.
+    args: ['run', '--extra', 'retrieval', 'uvicorn', 'runtime.api:app', '--host', '127.0.0.1', '--port', '18080'],
     cwd: path.join(root, 'backend'),
     env: {
       ...commonEnv,

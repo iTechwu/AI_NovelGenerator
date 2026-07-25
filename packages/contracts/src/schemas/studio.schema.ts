@@ -435,6 +435,34 @@ export const StudioAdaptationMarkStaleResponseSchema = z.object({
   markedStaleCount: z.number().int().nonnegative(),
 });
 
+export const StudioReviewVerdictSchema = z.enum(['faithful', 'needs_revision', 'cut_approved']);
+
+export const StudioAdaptationReviewAnnotationSchema = z.object({
+  id: z.string().uuid(),
+  adaptationId: z.string().uuid(),
+  episodeNumber: z.number().int().positive(),
+  sceneNumber: z.number().int().positive(),
+  verdict: StudioReviewVerdictSchema,
+  note: z.string(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const UpsertStudioAdaptationReviewAnnotationSchema = z.object({
+  episodeNumber: z.coerce.number().int().min(1),
+  sceneNumber: z.coerce.number().int().min(1),
+  verdict: StudioReviewVerdictSchema,
+  note: z.string().trim().min(1).max(10_000),
+});
+
+export const StudioAdaptationReviewAnnotationListQuerySchema = PaginationQuerySchema.pick({
+  limit: true,
+  page: true,
+});
+export const StudioAdaptationReviewAnnotationListResponseSchema = PaginatedResponseSchema(
+  StudioAdaptationReviewAnnotationSchema,
+);
+
 export const StudioProjectImportResultSchema = z.object({
   importId: z.string().uuid(),
   project: StudioProjectSummarySchema,
@@ -800,6 +828,26 @@ export const ChapterSummarizeResultSchema = z.object({
   summary: z.string(),
 });
 
+// Python runtime: project-scoped knowledge / RAG vectorstore.
+export const KnowledgeImportRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  content: z.string().min(1).max(200_000),
+});
+export const KnowledgeImportResultSchema = z.object({
+  imported: z.boolean().default(true),
+});
+export const KnowledgeQueryRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  query: z.string().min(1).max(2_000),
+  k: z.number().int().min(1).max(20).optional(),
+});
+export const KnowledgeQueryResultSchema = z.object({
+  context: z.string(),
+});
+export const KnowledgeClearResultSchema = z.object({
+  cleared: z.boolean(),
+});
+
 export const StudioProjectListItemSchema = StudioProjectSummarySchema.extend({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -846,7 +894,12 @@ export const StudioProjectOverviewSchema = z.object({
 export const StudioProjectEventSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
-  type: z.enum(['generation_status', 'finalization_task_status', 'fact_change_decision']),
+  type: z.enum([
+    'generation_status',
+    'finalization_task_status',
+    'fact_change_decision',
+    'adaptation_status',
+  ]),
   payload: z.record(z.string(), z.unknown()),
   createdAt: z.string().datetime(),
 });
@@ -980,6 +1033,18 @@ export type StudioAdaptationSourceDrift = z.infer<typeof StudioAdaptationSourceD
 export type StudioAdaptationMarkStaleResponse = z.infer<
   typeof StudioAdaptationMarkStaleResponseSchema
 >;
+export type StudioAdaptationReviewAnnotation = z.infer<
+  typeof StudioAdaptationReviewAnnotationSchema
+>;
+export type UpsertStudioAdaptationReviewAnnotation = z.infer<
+  typeof UpsertStudioAdaptationReviewAnnotationSchema
+>;
+export type StudioAdaptationReviewAnnotationListQuery = z.infer<
+  typeof StudioAdaptationReviewAnnotationListQuerySchema
+>;
+export type StudioAdaptationReviewAnnotationListResponse = z.infer<
+  typeof StudioAdaptationReviewAnnotationListResponseSchema
+>;
 export type StudioFactProposal = z.infer<typeof StudioFactProposalSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type StudioBlueprint = z.infer<typeof StudioBlueprintSchema>;
@@ -996,6 +1061,11 @@ export type BlueprintParseRequest = z.infer<typeof BlueprintParseRequestSchema>;
 export type BlueprintParseResult = z.infer<typeof BlueprintParseResultSchema>;
 export type ChapterSummarizeRequest = z.infer<typeof ChapterSummarizeRequestSchema>;
 export type ChapterSummarizeResult = z.infer<typeof ChapterSummarizeResultSchema>;
+export type KnowledgeImportRequest = z.infer<typeof KnowledgeImportRequestSchema>;
+export type KnowledgeImportResult = z.infer<typeof KnowledgeImportResultSchema>;
+export type KnowledgeQueryRequest = z.infer<typeof KnowledgeQueryRequestSchema>;
+export type KnowledgeQueryResult = z.infer<typeof KnowledgeQueryResultSchema>;
+export type KnowledgeClearResult = z.infer<typeof KnowledgeClearResultSchema>;
 export type UpdateStudioChapterPlan = z.infer<typeof UpdateStudioChapterPlanSchema>;
 export type CreateStudioChapterDraft = z.infer<typeof CreateStudioChapterDraftSchema>;
 export type CreateStudioAuthorRevision = z.infer<typeof CreateStudioAuthorRevisionSchema>;

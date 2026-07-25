@@ -8,6 +8,7 @@ import type {
   StudioStandaloneScreenplayRevision,
   StudioStandaloneScreenplayScene,
 } from '@repo/contracts';
+import { analyzeFountain } from '@repo/contracts';
 import { Link } from '@/i18n/navigation';
 import { studioClient } from '@/lib/api/contracts/client';
 import { publishProjectNavigationState } from '@/lib/studio/project-navigation';
@@ -44,6 +45,7 @@ export function StudioScreenplayWorkspace({ projectId }: { projectId: string }) 
     () => scenes.find((scene) => scene.id === selectedSceneId) ?? null,
     [scenes, selectedSceneId],
   );
+  const fountainValidation = useMemo(() => analyzeFountain(content), [content]);
 
   const loadRevisions = useCallback(
     async (sceneId: string) => {
@@ -192,6 +194,10 @@ export function StudioScreenplayWorkspace({ projectId }: { projectId: string }) 
       setError('请先保存场景计划并填写剧本正文。');
       return;
     }
+    if (!fountainValidation.isValid) {
+      setError(`剧本格式需要修正：${fountainValidation.errors[0]}`);
+      return;
+    }
     setIsSavingRevision(true);
     setError(null);
     try {
@@ -263,7 +269,7 @@ export function StudioScreenplayWorkspace({ projectId }: { projectId: string }) 
             <label className="grid gap-2 text-sm font-medium">场景标题<Input value={sceneDraft.title} maxLength={200} onChange={(event) => setSceneDraft((current) => ({ ...current, title: event.target.value }))} placeholder="例如：港口的匿名录像" /></label>
             <label className="grid gap-2 text-sm font-medium">场景梗概<Textarea value={sceneDraft.synopsis} maxLength={5000} className="min-h-24" onChange={(event) => setSceneDraft((current) => ({ ...current, synopsis: event.target.value }))} placeholder="明确这一场的转折、人物目标与离场状态。" /></label>
             <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" onClick={() => void saveScene('draft')} disabled={isSavingScene}><Save className="size-4" />{isSavingScene ? '正在保存' : '保存场景'}</Button><Button type="button" onClick={() => void saveScene('confirmed')} disabled={isSavingScene || !selectedScene}><ScrollText className="size-4" />确认场景</Button></div>
-            <div className="grid gap-3 border-t pt-5"><div className="flex items-center justify-between gap-3"><h2 className="text-base font-semibold">剧本正文</h2><span className="text-xs text-muted-foreground">Fountain</span></div><Textarea value={content} maxLength={50_000} className="min-h-80 font-mono text-sm leading-7" onChange={(event) => setContent(event.target.value)} placeholder={'INT. 港口仓库 - 夜\n\n林舟推开生锈的门。\n\n林舟\n录像是谁寄来的？'} /><Input value={editSummary} maxLength={500} onChange={(event) => setEditSummary(event.target.value)} placeholder="本次改稿说明（可选）" /><Button type="button" onClick={() => void saveRevision()} disabled={isSavingRevision || !selectedSceneId || !content.trim()}><Save className="size-4" />{isSavingRevision ? '正在保存版本' : '保存为新版本'}</Button></div>
+            <div className="grid gap-3 border-t pt-5"><div className="flex items-center justify-between gap-3"><h2 className="text-base font-semibold">剧本正文</h2><span className="text-xs text-muted-foreground">Fountain</span></div><Textarea value={content} maxLength={50_000} className="min-h-80 font-mono text-sm leading-7" onChange={(event) => setContent(event.target.value)} placeholder={'INT. 港口仓库 - 夜\n\n林舟推开生锈的门。\n\n林舟\n录像是谁寄来的？'} /><div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-live="polite"><span>场景头 {fountainValidation.sceneHeadingCount}</span><span>动作 {fountainValidation.actionCount}</span><span>角色/对白 {fountainValidation.dialogueCount}</span></div>{fountainValidation.errors.map((message) => <p key={message} className="text-sm text-destructive" role="alert">{message}</p>)}{fountainValidation.warnings.map((message) => <p key={message} className="text-xs text-muted-foreground">{message}</p>)}<Input value={editSummary} maxLength={500} onChange={(event) => setEditSummary(event.target.value)} placeholder="本次改稿说明（可选）" /><Button type="button" onClick={() => void saveRevision()} disabled={isSavingRevision || !selectedSceneId || !content.trim() || !fountainValidation.isValid}><Save className="size-4" />{isSavingRevision ? '正在保存版本' : '保存为新版本'}</Button></div>
           </main>
 
           <aside className="grid content-start gap-3 border p-3" aria-label="剧本版本">

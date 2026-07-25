@@ -36,6 +36,10 @@ import {
   StudioAdaptationExportSchema,
   StudioAdaptationSourceDriftSchema,
   StudioAdaptationMarkStaleResponseSchema,
+  StudioAdaptationReviewAnnotationSchema,
+  UpsertStudioAdaptationReviewAnnotationSchema,
+  StudioAdaptationReviewAnnotationListQuerySchema,
+  StudioAdaptationReviewAnnotationListResponseSchema,
   SaveStudioStandaloneScreenplaySceneSchema,
   StudioStandaloneScreenplaySceneSchema,
   StudioStandaloneScreenplaySceneListQuerySchema,
@@ -318,6 +322,33 @@ export const studioContract = c.router(
       responses: { 200: ApiResponseSchema(StudioAdaptationMarkStaleResponseSchema) },
       summary:
         'Mark all non-stale source-scene mappings for re-review after a source update',
+    },
+    createAdaptationResnapshot: {
+      method: 'POST',
+      path: '/adaptations/:adaptationId/source-snapshot',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      body: z.object({}),
+      responses: { 201: ApiResponseSchema(StudioAdaptationProjectSchema) },
+      summary:
+        'Generate a new immutable source snapshot from the current finalized chapters and repoint the adaptation',
+    },
+    listAdaptationReviewAnnotations: {
+      method: 'GET',
+      path: '/adaptations/:adaptationId/review-annotations',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      query: StudioAdaptationReviewAnnotationListQuerySchema,
+      responses: {
+        200: ApiResponseSchema(StudioAdaptationReviewAnnotationListResponseSchema),
+      },
+      summary: 'List per-scene comparative-review verdict annotations',
+    },
+    upsertAdaptationReviewAnnotation: {
+      method: 'PUT',
+      path: '/adaptations/:adaptationId/review-annotations',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      body: UpsertStudioAdaptationReviewAnnotationSchema,
+      responses: { 200: ApiResponseSchema(StudioAdaptationReviewAnnotationSchema) },
+      summary: 'Create or update the author verdict annotation for a scene',
     },
     listStandaloneScreenplayScenes: {
       method: 'GET',

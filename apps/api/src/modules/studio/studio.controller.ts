@@ -489,6 +489,53 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.createAdaptationResnapshot)
+  async createAdaptationResnapshot(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createAdaptationResnapshot, async ({ params }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.createAdaptationResnapshot(
+          request.userId,
+          params.adaptationId,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listAdaptationReviewAnnotations)
+  async listAdaptationReviewAnnotations(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listAdaptationReviewAnnotations, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listAdaptationReviewAnnotations(
+          request.userId,
+          params.adaptationId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.upsertAdaptationReviewAnnotation)
+  async upsertAdaptationReviewAnnotation(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.upsertAdaptationReviewAnnotation, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.upsertAdaptationReviewAnnotation(
+          request.userId,
+          params.adaptationId,
+          body,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.exportProject)
   async exportProject(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.exportProject, async ({ params, query }) => ({

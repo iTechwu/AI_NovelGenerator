@@ -17,6 +17,7 @@ import {
   SaveStudioStandaloneScreenplaySceneSchema,
   CreateStudioStandaloneScreenplayRevisionSchema,
 } from '../schemas/studio.schema';
+import { analyzeFountain } from '../utils/fountain';
 
 describe('studio schemas', () => {
   it('applies generation defaults at the API boundary', () => {
@@ -121,6 +122,20 @@ describe('studio schemas', () => {
         content: 'INT. 码头仓库 - 夜\n\n林舟打开录像机。',
       }).success,
     ).toBe(true);
+  });
+
+  it('requires a Fountain scene heading and action while allowing silent scenes', () => {
+    expect(analyzeFountain('林舟推开生锈的门。')).toMatchObject({
+      isValid: false,
+      sceneHeadingCount: 0,
+      actionCount: 1,
+    });
+    expect(analyzeFountain('INT. 港口仓库 - 夜\n\n林舟推开生锈的门。')).toMatchObject({
+      isValid: true,
+      sceneHeadingCount: 1,
+      actionCount: 1,
+      dialogueCount: 0,
+    });
   });
 
   it('keeps brief edits bounded while allowing an author to complete them before confirmation', () => {
