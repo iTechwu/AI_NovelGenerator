@@ -103,12 +103,6 @@ services:
       RABBITMQ_URL: amqp://dofe:${RABBITMQ_PASSWORD:-dofe_dev_2024}@rabbitmq:5672/nestjs_xica
       NOVEL_RUNTIME_BASE_URL: http://novel-runtime:18080
       NOVEL_RUNTIME_SHARED_SECRET: ${NOVEL_RUNTIME_SHARED_SECRET:-hanlin_runtime_dev_only}
-      SSO_API_URL: ${SSO_API_URL:-https://sso.dofe.ai}
-      SSO_INTERNAL_API_URL: ${SSO_INTERNAL_API_URL:-https://sso.dofe.ai}
-      SSO_ISSUER: ${SSO_ISSUER:-https://sso.dofe.ai}
-      SSO_CLIENT_ID: ${SSO_CLIENT_ID:-hanlin-ai}
-      SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:-local-dev-placeholder}
-      SSO_SERVICE_NAME: ${SSO_SERVICE_NAME:-hanlin.ai}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-local-dev-placeholder}
       JWT_SECRET: ${JWT_SECRET:-local-dev-jwt-secret-change-before-production}
       CRYPTO_KEY: ${CRYPTO_KEY:-local-dev-crypto-key-change-before-production}

@@ -6,12 +6,6 @@ export const API_CONFIG = {
   // API 基础地址
   baseUrl: env.NEXT_PUBLIC_SERVER_BASE_URL,
   apiHealthUrl: env.NEXT_PUBLIC_SERVER_BASE_URL + '/health',
-
-  // API 端点路径（认证以 sso.dofe.ai 为唯一真源，经由本项目 OIDC Client 代理）
-  endpoints: {
-    authorize: '/api/auth/oidc/authorize',
-    refreshToken: '/auth/oidc/token',
-  },
 };
 
 /**

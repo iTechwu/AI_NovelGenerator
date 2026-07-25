@@ -3,7 +3,6 @@ export * from './auth.contract';
 export * from './download.contract';
 export * from './file.contract';
 export * from './message.contract';
-export * from './oidc-auth.contract';
 export * from './risk-words.contract';
 export * from './setting.contract';
 export * from './sms.contract';

@@ -18,9 +18,8 @@ import {
   isSessionExpired,
   setLoginData,
   getAccessToken,
-  getIdToken,
 } from '@/lib/storage';
-import { oidcAuthClient } from '@/lib/api/contracts/client';
+import { authClient } from '@/lib/api/contracts/client';
 import { tokenManager, SessionExpiredError } from '@/lib/token-manager';
 import { prefetchDashboardData } from '@/lib/api/prefetch';
 
@@ -53,14 +52,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 interface AuthProviderProps {
   children: ReactNode;
-}
-
-function extractLogoutUrl(body: unknown): string | null {
-  if (!body || typeof body !== 'object') return null;
-  const data = (body as { data?: unknown }).data;
-  if (!data || typeof data !== 'object') return null;
-  const logoutUrl = (data as { logoutUrl?: unknown }).logoutUrl;
-  return typeof logoutUrl === 'string' ? logoutUrl : null;
 }
 
 export function AuthProvider({ children }: AuthProviderProps) {
@@ -130,51 +121,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
     });
   }, []);
 
-  // Logout: revoke access token, clear HttpOnly refresh cookie, clear storage, and redirect to SSO logout.
+  // Logout: 撤销后端会话（删 access 会话 + jti 黑名单 + 清 refresh cookie），清本地，跳登录页。
   const logout = useCallback(async () => {
     const accessToken = getAccessToken();
-    const idTokenHint = getIdToken();
-    let ssoLogoutUrl: string | null = null;
-
     if (accessToken) {
       try {
-        const res = await oidcAuthClient.logout({
-          body: {
-            access_token: accessToken,
-            id_token_hint: idTokenHint || undefined,
-          },
-        });
-        ssoLogoutUrl = extractLogoutUrl(res.body);
+        await authClient.logout({ body: {} });
       } catch (error) {
-        logger.warn('SSO logout with token revocation failed:', error);
+        logger.warn('Logout failed:', error);
       }
     }
-
-    if (!ssoLogoutUrl) {
-      try {
-        const res = await oidcAuthClient.getLogoutUrl({
-          query: { id_token_hint: idTokenHint || undefined },
-        });
-        ssoLogoutUrl = extractLogoutUrl(res.body);
-      } catch (error) {
-        logger.warn('SSO logout URL fetch failed:', error);
-      }
-    }
-
-    try {
-      await oidcAuthClient.clearSession({ body: {} });
-    } catch {
-      // Best-effort: local cleanup still happens below.
-    }
-
     clearAll();
     setUserState(null);
-
-    if (ssoLogoutUrl) {
-      window.location.href = ssoLogoutUrl;
-    } else {
-      router.push('/login');
-    }
+    router.push('/login');
   }, [router]);
 
   // Refresh user info from server using tokenManager; refresh_token remains in HttpOnly cookie.

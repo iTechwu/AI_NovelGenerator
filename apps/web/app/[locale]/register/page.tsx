@@ -1,25 +1,22 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@repo/ui';
 import { Loader2 } from 'lucide-react';
 import { authClient } from '@/lib/api/contracts/client';
 import { setLoginData } from '@/lib/storage';
 import type { LoginSuccess } from '@repo/contracts';
 
-/**
- * 本地账号密码登录页（自建认证）。
- * 不再重定向到 sso.dofe.ai；提交直接调用本地 authContract.loginByEmail。
- */
-export default function LoginPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get('callbackUrl') || '/';
+const inputClass =
+  'h-10 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-primary';
 
+export default function RegisterPage() {
+  const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [nickname, setNickname] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,17 +25,19 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await authClient.loginByEmail({ body: { email, password } });
+      const res = await authClient.registerByEmail({
+        body: { email, password, nickname: nickname || undefined },
+      });
       const body = res.body as { msg?: string; data?: LoginSuccess } | undefined;
       if (res.status === 200 && body?.data) {
         setLoginData(body.data);
-        router.replace(callbackUrl);
+        router.replace('/');
         router.refresh();
       } else {
-        setError(body?.msg || '登录失败，请检查邮箱与密码');
+        setError(body?.msg || '注册失败，请稍后重试');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败，请稍后重试');
+      setError(err instanceof Error ? err.message : '注册失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -50,7 +49,7 @@ export default function LoginPage() {
         onSubmit={onSubmit}
         className="flex w-full max-w-sm flex-col gap-4 rounded-lg border p-6 shadow-sm"
       >
-        <h1 className="text-center text-xl font-semibold text-foreground">登录</h1>
+        <h1 className="text-center text-xl font-semibold text-foreground">注册</h1>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <input
           type="email"
@@ -59,29 +58,36 @@ export default function LoginPage() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="邮箱"
-          className="h-10 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+          className={inputClass}
+        />
+        <input
+          type="text"
+          autoComplete="nickname"
+          value={nickname}
+          onChange={(e) => setNickname(e.target.value)}
+          placeholder="昵称（可选）"
+          className={inputClass}
         />
         <input
           type="password"
           required
-          autoComplete="current-password"
+          minLength={8}
+          autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="密码"
-          className="h-10 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+          placeholder="密码（至少 8 位）"
+          className={inputClass}
         />
         <Button type="submit" disabled={loading}>
           {loading && <Loader2 className="mr-2 size-4 animate-spin" />}
-          登录
+          注册
         </Button>
-        <div className="flex justify-between text-sm">
-          <Link href="/forgot-password" className="text-muted-foreground hover:underline">
-            忘记密码？
+        <p className="text-center text-sm text-muted-foreground">
+          已有账号？{' '}
+          <Link href="/login" className="text-primary underline">
+            登录
           </Link>
-          <Link href="/register" className="text-primary hover:underline">
-            注册
-          </Link>
-        </div>
+        </p>
       </form>
     </div>
   );

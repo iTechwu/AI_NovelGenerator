@@ -16,7 +16,6 @@ import {
   taskContract,
   uploaderContract,
   userContract,
-  oidcAuthContract,
 } from '@repo/contracts';
 import { getHeaders } from '@repo/utils/headers';
 import { API_VERSION_HEADER, APP_BUILD_HEADER } from '@repo/constants';
@@ -357,11 +356,6 @@ export const userClient = initClient(userContract, clientOptions);
  * SMS API - Direct client (PUBLIC - no auth required)
  */
 export const smsClient = initClient(smsContract, publicClientOptions);
-
-/**
- * OIDC Auth API - Direct client (PUBLIC - no auth required)
- */
-export const oidcAuthClient = initClient(oidcAuthContract, publicClientOptions);
 
 /**
  * Analytics API - Direct client (for imperative calls)
