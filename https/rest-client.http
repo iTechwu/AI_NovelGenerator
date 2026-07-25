@@ -2,10 +2,10 @@
 # DofeAI REST Client HTTP 文件
 # =============================================================================
 # 使用 VS Code REST Client 插件可直接执行以下请求
-# 端口: 根据 apps/api/config.local.yaml 配置（默认 13100）
+# 端口: 根据 apps/api/config.local.yaml 配置（默认 3108）
 # =============================================================================
 
-@baseUrl = http://localhost:13100
+@baseUrl = http://localhost:3108
 @contentType = Content-Type: application/json
 
 # ── 认证 Token（登录后替换）────────────────────────────────────────────────────

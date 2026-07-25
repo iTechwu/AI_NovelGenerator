@@ -20,7 +20,7 @@ export async function sendChatMessage(
   onChunk?: (text: string) => void,
 ): Promise<string> {
   const baseUrl =
-    process.env.NEXT_PUBLIC_SERVER_BASE_URL || 'http://localhost:13100';
+    process.env.NEXT_PUBLIC_SERVER_BASE_URL || 'http://localhost:3108';
 
   if (onChunk) {
     const response = await fetch(`${baseUrl}${AI_CHAT_ENDPOINT}`, {

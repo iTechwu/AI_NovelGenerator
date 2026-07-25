@@ -4,15 +4,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BookOpenText,
   Check,
+  Clapperboard,
   CircleAlert,
+  Download,
   FileText,
   FolderOpen,
   LoaderCircle,
+  RefreshCw,
   Save,
   Sparkles,
 } from 'lucide-react';
 import { Badge, Button, Input, Label, Progress, Skeleton, Textarea } from '@repo/ui';
 import { studioClient } from '@/lib/api/contracts/client';
+import {
+  emptyProjectNavigationState,
+  publishProjectNavigationState,
+} from '@/lib/studio/project-navigation';
+import { ensureValidToken } from '@/lib/api';
+import { API_CONFIG } from '@/config';
 import type {
   CreateStudioProject,
   GenerationJob,
@@ -23,7 +32,14 @@ import type {
   StudioFact,
   StudioFactChange,
   CreateStudioFactChange,
+  CreateStudioAdaptation,
   StudioProjectListResponse,
+  StudioProjectOverview,
+  StudioProjectImportPreview,
+  StudioFinalizationTask,
+  StudioChapterFinalization,
+  StudioReviewFinding,
+  StudioAdaptationProject,
   UpdateStudioChapterPlan,
 } from '@repo/contracts';
 
@@ -38,8 +54,21 @@ const initialProject: CreateStudioProject = {
   generateOutline: true,
 };
 
-const terminalStatuses = new Set(['succeeded', 'failed']);
+const terminalStatuses = new Set(['succeeded', 'failed', 'cancelled']);
 type StudioProjectListItem = StudioProjectListResponse['list'][number];
+type AdaptationDraft = Omit<CreateStudioAdaptation, 'rightsConfirmed'> & {
+  rightsConfirmed: boolean;
+};
+
+const initialAdaptationDraft: AdaptationDraft = {
+  targetFormat: 'series',
+  episodeCount: 12,
+  minutesPerEpisode: 45,
+  targetAudience: '',
+  adaptationGoal: '',
+  mustPreserve: '',
+  rightsConfirmed: false,
+};
 
 const initialChapterPlan: UpdateStudioChapterPlan = {
   title: '',
@@ -58,6 +87,7 @@ function statusLabel(status: GenerationJob['status']): string {
     running: '生成中',
     succeeded: '已完成',
     failed: '生成失败',
+    cancelled: '已取消',
   }[status];
 }
 
@@ -74,6 +104,9 @@ export function StudioWorkbench() {
   const [project, setProject] = useState<CreateStudioProject>(initialProject);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [blueprint, setBlueprint] = useState<StudioBlueprint | null>(null);
+  const [blueprintHistory, setBlueprintHistory] = useState<StudioBlueprint[]>([]);
+  const [blueprintRestoreNotice, setBlueprintRestoreNotice] = useState<string | null>(null);
+  const [restoringBlueprintId, setRestoringBlueprintId] = useState<string | null>(null);
   const [chapterPlan, setChapterPlan] = useState<StudioChapterPlan | null>(null);
   const [chapterPlanDraft, setChapterPlanDraft] =
     useState<UpdateStudioChapterPlan>(initialChapterPlan);
@@ -81,6 +114,8 @@ export function StudioWorkbench() {
   const [chapterRevisions, setChapterRevisions] = useState<StudioChapterRevision[]>([]);
   const [currentRevisionId, setCurrentRevisionId] = useState<string | null>(null);
   const [currentFinalRevisionId, setCurrentFinalRevisionId] = useState<string | null>(null);
+  const [chapterFinalizations, setChapterFinalizations] = useState<StudioChapterFinalization[]>([]);
+  const [restoringFinalRevisionId, setRestoringFinalRevisionId] = useState<string | null>(null);
   const [selectedRevision, setSelectedRevision] = useState<StudioChapterRevision | null>(null);
   const [revisionContent, setRevisionContent] = useState('');
   const [revisionEditSummary, setRevisionEditSummary] = useState('');
@@ -93,6 +128,11 @@ export function StudioWorkbench() {
   const [revisionDiff, setRevisionDiff] = useState<StudioChapterRevisionDiff | null>(null);
   const [factChanges, setFactChanges] = useState<StudioFactChange[]>([]);
   const [confirmedFacts, setConfirmedFacts] = useState<StudioFact[]>([]);
+  const [reviewFindings, setReviewFindings] = useState<StudioReviewFinding[]>([]);
+  const [reviewResolutionDrafts, setReviewResolutionDrafts] = useState<
+    Record<string, { reason: string; resolvedValue: string }>
+  >({});
+  const [resolvingReviewFindingId, setResolvingReviewFindingId] = useState<string | null>(null);
   const [factChangeDraft, setFactChangeDraft] = useState<CreateStudioFactChange>({
     operation: 'add',
     factType: 'character',
@@ -106,8 +146,11 @@ export function StudioWorkbench() {
   const [editedFactValue, setEditedFactValue] = useState('');
   const [draftPrompt, setDraftPrompt] = useState('');
   const [projects, setProjects] = useState<StudioProjectListItem[]>([]);
+  const [projectPage, setProjectPage] = useState(1);
+  const [projectTotal, setProjectTotal] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [isLoadingMoreProjects, setIsLoadingMoreProjects] = useState(false);
   const [openingRunId, setOpeningRunId] = useState<string | null>(null);
   const [isSavingBlueprint, setIsSavingBlueprint] = useState(false);
   const [isSavingChapterPlan, setIsSavingChapterPlan] = useState(false);
@@ -117,6 +160,7 @@ export function StudioWorkbench() {
   const [isSavingFactChange, setIsSavingFactChange] = useState(false);
   const [resolvingFactChangeId, setResolvingFactChangeId] = useState<string | null>(null);
   const factChangesRequestId = useRef(0);
+  const projectsRequestId = useRef(0);
   const revisionSourceIdRef = useRef<string | null>(null);
   const recentlyCreatedRevisionIdRef = useRef<string | null>(null);
   const [isEditingConfirmedBlueprint, setIsEditingConfirmedBlueprint] = useState(false);
@@ -125,24 +169,95 @@ export function StudioWorkbench() {
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [blueprintError, setBlueprintError] = useState<string | null>(null);
   const [chapterPlanError, setChapterPlanError] = useState<string | null>(null);
+  const [projectOverview, setProjectOverview] = useState<StudioProjectOverview | null>(null);
+  const [finalizationTasks, setFinalizationTasks] = useState<StudioFinalizationTask[]>([]);
+  const [workspaceStatusError, setWorkspaceStatusError] = useState<string | null>(null);
+  const [retryingFinalizationTaskId, setRetryingFinalizationTaskId] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportFormat, setExportFormat] = useState<'md' | 'txt'>('md');
+  const [forceExport, setForceExport] = useState(false);
+  const [forceExportReason, setForceExportReason] = useState('');
+  const [importPreview, setImportPreview] = useState<StudioProjectImportPreview | null>(null);
+  const [acceptedImportFactCandidateIds, setAcceptedImportFactCandidateIds] = useState<string[]>(
+    [],
+  );
+  const [isPreviewingImport, setIsPreviewingImport] = useState(false);
+  const [isConfirmingImport, setIsConfirmingImport] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [isCancellingJob, setIsCancellingJob] = useState(false);
+  const [isRetryingJob, setIsRetryingJob] = useState(false);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [adaptations, setAdaptations] = useState<StudioAdaptationProject[]>([]);
+  const [adaptationDraft, setAdaptationDraft] = useState<AdaptationDraft>(initialAdaptationDraft);
+  const [isLoadingAdaptations, setIsLoadingAdaptations] = useState(false);
+  const [isCreatingAdaptation, setIsCreatingAdaptation] = useState(false);
+  const [adaptationError, setAdaptationError] = useState<string | null>(null);
 
-  const loadProjects = useCallback(async () => {
-    setIsLoadingProjects(true);
+  const loadProjects = useCallback(async (page = 1, append = false) => {
+    const requestId = ++projectsRequestId.current;
+    if (append) setIsLoadingMoreProjects(true);
+    else setIsLoadingProjects(true);
     setLibraryError(null);
 
     try {
       const response = await studioClient.listProjects({
-        query: { page: 1, limit: 20 },
+        query: { page, limit: 20 },
       });
+      if (requestId !== projectsRequestId.current) return;
       if (response.status === 200) {
-        setProjects(response.body.data.list);
+        setProjects((current) => {
+          if (!append) return response.body.data.list;
+          const projectById = new Map(current.map((project) => [project.id, project]));
+          response.body.data.list.forEach((project) => projectById.set(project.id, project));
+          return [...projectById.values()];
+        });
+        setProjectPage(response.body.data.page);
+        setProjectTotal(response.body.data.total);
       } else {
         setLibraryError('作品库暂时无法加载。');
       }
     } catch {
-      setLibraryError('作品库暂时无法加载。');
+      if (requestId === projectsRequestId.current) setLibraryError('作品库暂时无法加载。');
     } finally {
-      setIsLoadingProjects(false);
+      if (requestId === projectsRequestId.current) {
+        if (append) setIsLoadingMoreProjects(false);
+        else setIsLoadingProjects(false);
+      }
+    }
+  }, []);
+
+  const loadProjectStatus = useCallback(async (projectId: string) => {
+    setWorkspaceStatusError(null);
+    try {
+      const [overviewResponse, tasksResponse] = await Promise.all([
+        studioClient.getProjectOverview({ params: { projectId } }),
+        studioClient.listFinalizationTasks({
+          params: { projectId },
+          query: { page: 1, limit: 20 },
+        }),
+      ]);
+      if (overviewResponse.status === 200) setProjectOverview(overviewResponse.body.data);
+      if (tasksResponse.status === 200) setFinalizationTasks(tasksResponse.body.data.list);
+    } catch {
+      setWorkspaceStatusError('作品状态暂时无法加载。');
+    }
+  }, []);
+
+  const loadAdaptations = useCallback(async (projectId: string) => {
+    setIsLoadingAdaptations(true);
+    setAdaptationError(null);
+    try {
+      const response = await studioClient.listAdaptations({
+        params: { projectId },
+        query: { page: 1, limit: 20 },
+      });
+      if (response.status === 200) setAdaptations(response.body.data.list);
+      else setAdaptationError('改编项目暂时无法加载。');
+    } catch {
+      setAdaptationError('改编项目暂时无法加载。');
+    } finally {
+      setIsLoadingAdaptations(false);
     }
   }, []);
 
@@ -150,6 +265,44 @@ export function StudioWorkbench() {
     const timer = window.setTimeout(() => void loadProjects(), 0);
     return () => window.clearTimeout(timer);
   }, [loadProjects]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      setProjectOverview(null);
+      setFinalizationTasks([]);
+      setAdaptations([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadProjectStatus(activeProjectId);
+      void loadAdaptations(activeProjectId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeProjectId, loadAdaptations, loadProjectStatus]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    let eventSource: EventSource | null = null;
+    let disposed = false;
+    void ensureValidToken()
+      .then((token) => {
+        if (!token || disposed) return;
+        const url = new URL(
+          `${API_CONFIG.baseUrl}/studio/projects/${activeProjectId}/events/stream`,
+        );
+        url.searchParams.set('access_token', token);
+        eventSource = new EventSource(url.toString(), { withCredentials: true });
+        eventSource.addEventListener(
+          'studio-project-event',
+          () => void loadProjectStatus(activeProjectId),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      eventSource?.close();
+    };
+  }, [activeProjectId, loadProjectStatus]);
 
   const loadBlueprint = useCallback(async (projectId: string) => {
     setBlueprintError(null);
@@ -163,12 +316,32 @@ export function StudioWorkbench() {
     }
   }, []);
 
+  const loadBlueprintHistory = useCallback(async (projectId: string) => {
+    try {
+      const response = await studioClient.listBlueprints({
+        params: { projectId },
+        query: { page: 1, limit: 50 },
+      });
+      if (response.status === 200) setBlueprintHistory(response.body.data.list);
+    } catch {
+      setBlueprintHistory([]);
+    }
+  }, []);
+
   useEffect(() => {
     if (job?.status !== 'succeeded') return;
 
     const timer = window.setTimeout(() => void loadBlueprint(job.project.id), 0);
     return () => window.clearTimeout(timer);
   }, [job, loadBlueprint]);
+
+  useEffect(() => {
+    if (!blueprint) {
+      setBlueprintHistory([]);
+      return;
+    }
+    void loadBlueprintHistory(blueprint.projectId);
+  }, [blueprint?.projectId, blueprint?.updatedAt, loadBlueprintHistory]);
 
   const loadChapterPlan = useCallback(async (projectId: string, nextChapterNumber: number) => {
     setChapterPlanError(null);
@@ -242,6 +415,21 @@ export function StudioWorkbench() {
     }
   }, []);
 
+  const loadChapterFinalizations = useCallback(
+    async (projectId: string, nextChapterNumber: number) => {
+      try {
+        const response = await studioClient.listChapterFinalizations({
+          params: { projectId, chapterNumber: nextChapterNumber },
+          query: { page: 1, limit: 50 },
+        });
+        if (response.status === 200) setChapterFinalizations(response.body.data.list);
+      } catch {
+        setChapterFinalizations([]);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (chapterPlan?.status !== 'confirmed') return;
     const timer = window.setTimeout(
@@ -250,6 +438,14 @@ export function StudioWorkbench() {
     );
     return () => window.clearTimeout(timer);
   }, [chapterPlan, job?.revisionId, loadChapterRevisions]);
+
+  useEffect(() => {
+    if (!blueprint) {
+      setChapterFinalizations([]);
+      return;
+    }
+    void loadChapterFinalizations(blueprint.projectId, chapterNumber);
+  }, [blueprint?.projectId, chapterNumber, currentFinalRevisionId, loadChapterFinalizations]);
 
   useEffect(() => {
     if (!blueprint || !selectedRevision || !comparisonRevisionId) {
@@ -334,6 +530,21 @@ export function StudioWorkbench() {
     }
   }, []);
 
+  const loadReviewFindings = useCallback(
+    async (projectId: string, chapter: number, revisionId: string) => {
+      try {
+        const response = await studioClient.listReviewFindings({
+          params: { projectId, chapterNumber: chapter, revisionId },
+          query: { page: 1, limit: 50 },
+        });
+        if (response.status === 200) setReviewFindings(response.body.data.list);
+      } catch {
+        setReviewFindings([]);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!blueprint) {
       setConfirmedFacts([]);
@@ -354,6 +565,14 @@ export function StudioWorkbench() {
     );
     return () => window.clearTimeout(timer);
   }, [blueprint, chapterNumber, selectedRevision, loadFactChanges]);
+
+  useEffect(() => {
+    if (!blueprint || !selectedRevision) {
+      setReviewFindings([]);
+      return;
+    }
+    void loadReviewFindings(blueprint.projectId, chapterNumber, selectedRevision.id);
+  }, [blueprint, chapterNumber, selectedRevision, loadReviewFindings]);
 
   useEffect(() => {
     if (!job || terminalStatuses.has(job.status)) return;
@@ -379,6 +598,127 @@ export function StudioWorkbench() {
     setProject((current) => ({ ...current, [key]: value }));
   };
 
+  const previewProjectImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!/\.(txt|md|docx)$/iu.test(file.name)) {
+      setImportError('仅支持 UTF-8 编码的 TXT、Markdown 或 DOCX 文件。');
+      return;
+    }
+    if (file.size > 7_500_000) {
+      setImportError('单个存稿文件不能超过 7.5 MB。');
+      return;
+    }
+    setIsPreviewingImport(true);
+    setImportError(null);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error('file-read-failed'));
+        reader.readAsDataURL(file);
+      });
+      const contentBase64 = dataUrl.split(',', 2)[1];
+      if (!contentBase64) throw new Error('missing-base64');
+      const response = await studioClient.previewProjectImport({
+        body: {
+          filename: file.name,
+          format: file.name.toLowerCase().endsWith('.docx')
+            ? 'docx'
+            : file.name.toLowerCase().endsWith('.md')
+              ? 'md'
+              : 'txt',
+          contentBase64,
+        },
+      });
+      if (response.status !== 201) {
+        setImportError('存稿预览暂时无法创建。');
+        return;
+      }
+      setImportPreview(response.body.data);
+      setAcceptedImportFactCandidateIds([]);
+      setProject((current) => ({
+        ...current,
+        title: current.title || file.name.replace(/\.(txt|md|docx)$/iu, ''),
+        chapterCount: response.body.data.chapters.length,
+        generateOutline: false,
+      }));
+    } catch {
+      setImportError('无法读取或解析该存稿，请确认编码后重试。');
+    } finally {
+      setIsPreviewingImport(false);
+    }
+  };
+
+  const confirmProjectImport = async () => {
+    if (!importPreview) return;
+    if (!project.title.trim() || !project.genre.trim()) {
+      setImportError('请先填写项目名称和题材。');
+      return;
+    }
+    setIsConfirmingImport(true);
+    setImportError(null);
+    try {
+      const response = await studioClient.confirmProjectImport({
+        params: { importId: importPreview.importId },
+        body: {
+          title: project.title.trim(),
+          genre: project.genre.trim(),
+          guidance: project.guidance,
+          targetWordsPerChapter: project.targetWordsPerChapter,
+          acceptedFactCandidateIds: acceptedImportFactCandidateIds,
+        },
+      });
+      if (response.status !== 201) {
+        setImportError('存稿确认迁移失败。');
+        return;
+      }
+      setImportPreview(null);
+      setAcceptedImportFactCandidateIds([]);
+      setActiveProjectId(response.body.data.project.id);
+      await Promise.all([loadProjects(), loadBlueprint(response.body.data.project.id)]);
+    } catch {
+      setImportError('存稿确认迁移失败。');
+    } finally {
+      setIsConfirmingImport(false);
+    }
+  };
+
+  const cancelJob = async () => {
+    if (!job || terminalStatuses.has(job.status)) return;
+    setIsCancellingJob(true);
+    setError(null);
+    try {
+      const response = await studioClient.cancelJob({ params: { jobId: job.id }, body: {} });
+      if (response.status === 202) {
+        setJob(response.body.data);
+        void loadProjects();
+      } else setError('创作任务暂时无法取消。');
+    } catch {
+      setError('创作任务暂时无法取消。');
+    } finally {
+      setIsCancellingJob(false);
+    }
+  };
+
+  const retryJob = async () => {
+    if (!job || (job.status !== 'failed' && job.status !== 'cancelled')) return;
+    setIsRetryingJob(true);
+    setError(null);
+    try {
+      const response = await studioClient.retryJob({ params: { jobId: job.id }, body: {} });
+      if (response.status === 202) {
+        setJob(response.body.data);
+        void loadProjects();
+      } else setError('创作任务暂时无法恢复。');
+    } catch {
+      setError('创作任务暂时无法恢复。');
+    } finally {
+      setIsRetryingJob(false);
+    }
+  };
+
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsSubmitting(true);
@@ -393,40 +733,69 @@ export function StudioWorkbench() {
       const response = await studioClient.createProject({ body: project });
       if (response.status === 202) {
         setJob(response.body.data);
+        setActiveProjectId(response.body.data.project.id);
         void loadProjects();
       } else {
-        setError('项目没有成功进入生成队列。');
+        setError('项目没有成功进入生成队列。请在作品库确认项目状态。');
+        void loadProjects();
       }
     } catch {
-      setError('无法创建项目。请确认已登录且创作运行时已启动。');
+      setError('创建请求未完成。请先在作品库确认是否已有该作品。');
+      void loadProjects();
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const openLatestRun = async (item: StudioProjectListItem) => {
-    if (!item.latestRun) return;
-
-    setOpeningRunId(item.latestRun.id);
+  const openProject = async (item: StudioProjectListItem) => {
+    setOpeningRunId(item.id);
     setError(null);
+    setActiveProjectId(item.id);
+    setJob(null);
     setBlueprint(null);
     setIsEditingConfirmedBlueprint(false);
     setChapterPlan(null);
     setChapterPlanDraft(initialChapterPlan);
     setIsEditingConfirmedChapterPlan(false);
     try {
-      const response = await studioClient.getJob({
-        params: { jobId: item.latestRun.id },
-      });
-      if (response.status === 200) {
-        setJob(response.body.data);
-      } else {
-        setError('无法打开该作品的最近任务。');
+      await loadBlueprint(item.id);
+      if (item.latestRun) {
+        const response = await studioClient.getJob({
+          params: { jobId: item.latestRun.id },
+        });
+        if (response.status === 200) {
+          setJob(response.body.data);
+        } else {
+          setError('无法打开该作品的最近任务。');
+        }
       }
     } catch {
-      setError('无法打开该作品的最近任务。');
+      setError('无法打开该作品。');
     } finally {
       setOpeningRunId(null);
+    }
+  };
+
+  const createAdaptation = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!activeProjectId || !adaptationDraft.rightsConfirmed) return;
+    setIsCreatingAdaptation(true);
+    setAdaptationError(null);
+    try {
+      const response = await studioClient.createAdaptation({
+        params: { projectId: activeProjectId },
+        body: { ...adaptationDraft, rightsConfirmed: true },
+      });
+      if (response.status !== 201) {
+        setAdaptationError('改编项目创建失败。');
+        return;
+      }
+      setAdaptations((current) => [response.body.data, ...current]);
+      setAdaptationDraft(initialAdaptationDraft);
+    } catch {
+      setAdaptationError('改编项目创建失败，请确认来源章节已定稿后重试。');
+    } finally {
+      setIsCreatingAdaptation(false);
     }
   };
 
@@ -473,6 +842,35 @@ export function StudioWorkbench() {
     }
   };
 
+  const restoreBlueprint = async (target: StudioBlueprint) => {
+    if (!blueprint || target.id === blueprint.id || target.status !== 'confirmed') return;
+    if (!window.confirm(`恢复蓝图 v${target.version} 会要求受影响章节重新复核。是否继续？`)) return;
+    setRestoringBlueprintId(target.id);
+    setBlueprintError(null);
+    try {
+      const response = await studioClient.restoreBlueprint({
+        params: { projectId: blueprint.projectId, blueprintId: target.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        setBlueprint(response.body.data.blueprint);
+        setBlueprintRestoreNotice(
+          response.body.data.affectedChapterNumbers.length > 0
+            ? `已恢复蓝图 v${target.version}；第 ${response.body.data.affectedChapterNumbers.join('、')} 章需要复核。`
+            : `已恢复蓝图 v${target.version}。`,
+        );
+        await Promise.all([
+          loadBlueprintHistory(blueprint.projectId),
+          loadProjectStatus(blueprint.projectId),
+        ]);
+      } else setBlueprintError('蓝图恢复失败。');
+    } catch {
+      setBlueprintError('蓝图恢复失败。');
+    } finally {
+      setRestoringBlueprintId(null);
+    }
+  };
+
   const saveChapterPlan = async () => {
     if (!blueprint || blueprint.status !== 'confirmed') return;
 
@@ -497,7 +895,12 @@ export function StudioWorkbench() {
   };
 
   const confirmChapterPlan = async () => {
-    if (!blueprint || !chapterPlan || chapterPlan.status === 'confirmed') return;
+    if (
+      !blueprint ||
+      !chapterPlan ||
+      (chapterPlan.status === 'confirmed' && !chapterPlan.needsReview)
+    )
+      return;
 
     setIsSavingChapterPlan(true);
     setChapterPlanError(null);
@@ -519,7 +922,8 @@ export function StudioWorkbench() {
   };
 
   const createChapterDraft = async () => {
-    if (!blueprint || !chapterPlan || chapterPlan.status !== 'confirmed') return;
+    if (!blueprint || !chapterPlan || chapterPlan.status !== 'confirmed' || chapterPlan.needsReview)
+      return;
 
     setIsGeneratingChapterDraft(true);
     setChapterPlanError(null);
@@ -536,7 +940,9 @@ export function StudioWorkbench() {
         setChapterPlanError('章节草稿没有成功进入生成队列。');
       }
     } catch {
-      setChapterPlanError('无法生成章节草稿。请确认创作运行时已启动。');
+      setChapterPlanError('章节草稿请求未完成。请在任务中心确认任务状态。');
+      void loadProjects();
+      void loadProjectStatus(blueprint.projectId);
     } finally {
       setIsGeneratingChapterDraft(false);
     }
@@ -565,6 +971,34 @@ export function StudioWorkbench() {
       setChapterPlanError('恢复章节草稿失败。');
     } finally {
       setIsRestoringChapterDraft(false);
+    }
+  };
+
+  const restoreFinalRevision = async (finalization: StudioChapterFinalization) => {
+    if (!blueprint || finalization.revisionId === currentFinalRevisionId) return;
+    if (!window.confirm('恢复历史终稿会同步该版本的事实快照，并标记后续章节计划待复核。是否继续？'))
+      return;
+    setRestoringFinalRevisionId(finalization.revisionId);
+    try {
+      const response = await studioClient.restoreFinalChapterRevision({
+        params: {
+          projectId: blueprint.projectId,
+          chapterNumber,
+          revisionId: finalization.revisionId,
+        },
+        body: {},
+      });
+      if (response.status === 200) {
+        setCurrentFinalRevisionId(response.body.data.revision.id);
+        await Promise.all([
+          loadChapterRevisions(blueprint.projectId, chapterNumber),
+          loadProjectStatus(blueprint.projectId),
+        ]);
+      } else setChapterPlanError('历史终稿恢复失败。');
+    } catch {
+      setChapterPlanError('历史终稿恢复失败。');
+    } finally {
+      setRestoringFinalRevisionId(null);
     }
   };
 
@@ -753,6 +1187,111 @@ export function StudioWorkbench() {
     }
   };
 
+  const resolveReviewFinding = async (
+    finding: StudioReviewFinding,
+    decision: 'resolve' | 'ignore' | 'intentional_change',
+  ) => {
+    const draft = reviewResolutionDrafts[finding.id] ?? { reason: '', resolvedValue: '' };
+    if (
+      !blueprint ||
+      !selectedRevision ||
+      !draft.reason.trim() ||
+      (decision === 'intentional_change' && !draft.resolvedValue.trim())
+    )
+      return;
+    setResolvingReviewFindingId(finding.id);
+    try {
+      const response = await studioClient.resolveReviewFinding({
+        params: {
+          projectId: blueprint.projectId,
+          chapterNumber,
+          revisionId: selectedRevision.id,
+          findingId: finding.id,
+        },
+        body: {
+          decision,
+          reason: draft.reason.trim(),
+          ...(decision === 'intentional_change'
+            ? { resolvedValue: draft.resolvedValue.trim() }
+            : {}),
+        },
+      });
+      if (response.status === 200) {
+        setReviewFindings((current) =>
+          current.map((item) => (item.id === finding.id ? response.body.data : item)),
+        );
+        setReviewResolutionDrafts((current) => {
+          const { [finding.id]: _, ...remaining } = current;
+          return remaining;
+        });
+        void loadProjectStatus(blueprint.projectId);
+      } else setChapterPlanError('审校问题处理失败。');
+    } catch {
+      setChapterPlanError('审校问题处理失败。');
+    } finally {
+      setResolvingReviewFindingId(null);
+    }
+  };
+
+  const retryFinalizationTask = async (task: StudioFinalizationTask) => {
+    if (!activeProjectId) return;
+    setRetryingFinalizationTaskId(task.id);
+    setWorkspaceStatusError(null);
+    try {
+      const response = await studioClient.retryFinalizationTask({
+        params: { projectId: activeProjectId, taskId: task.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        setFinalizationTasks((current) =>
+          current.map((item) => (item.id === task.id ? response.body.data : item)),
+        );
+        void loadProjectStatus(activeProjectId);
+      } else {
+        setWorkspaceStatusError('后台任务暂时无法重试。');
+      }
+    } catch {
+      setWorkspaceStatusError('后台任务暂时无法重试。');
+    } finally {
+      setRetryingFinalizationTaskId(null);
+    }
+  };
+
+  const exportProject = async () => {
+    if (!activeProjectId) return;
+    if (forceExport && !forceExportReason.trim()) {
+      setExportError('强制导出前必须说明原因。');
+      return;
+    }
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const response = await studioClient.exportProject({
+        params: { projectId: activeProjectId },
+        query: {
+          format: exportFormat,
+          force: forceExport,
+          ...(forceExport ? { forceReason: forceExportReason.trim() } : {}),
+        },
+      });
+      if (response.status !== 200) {
+        setExportError('作品暂时无法导出。');
+        return;
+      }
+      const file = new Blob([response.body.data.content], { type: response.body.data.contentType });
+      const url = URL.createObjectURL(file);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = response.body.data.filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError('作品暂时无法导出。请先处理阻断问题，或填写强制导出原因。');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const pendingFactChanges = factChanges.some((change) => change.status === 'proposed');
   const finalizationBlockedReason = !selectedRevision
     ? '请选择一个章节草稿。'
@@ -765,6 +1304,25 @@ export function StudioWorkbench() {
           : pendingFactChanges
             ? '请先裁决全部事实建议。'
             : '定稿会锁定此版本并创建摘要、检索任务。';
+
+  useEffect(() => {
+    publishProjectNavigationState({
+      hasProject: Boolean(activeProjectId),
+      hasBlueprint: Boolean(blueprint),
+      hasChapterWorkspace: Boolean(
+        blueprint?.status === 'confirmed' && !isEditingConfirmedBlueprint,
+      ),
+      hasDraftWorkspace: Boolean(selectedRevision),
+      hasAdaptationSource: Boolean(projectOverview && projectOverview.finalizedChapterCount > 0),
+    });
+  }, [activeProjectId, blueprint, isEditingConfirmedBlueprint, projectOverview, selectedRevision]);
+
+  useEffect(
+    () => () => {
+      publishProjectNavigationState(emptyProjectNavigationState);
+    },
+    [],
+  );
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-5 py-8 md:px-8">
@@ -782,7 +1340,11 @@ export function StudioWorkbench() {
         {job && <Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>}
       </header>
 
-      <section className="grid gap-4 border-b pb-7" aria-labelledby="project-library-heading">
+      <section
+        id="project-library"
+        className="grid gap-4 border-b pb-7 scroll-mt-6"
+        aria-labelledby="project-library-heading"
+      >
         <div className="flex items-center gap-2">
           <FolderOpen className="size-4 text-primary" />
           <h2 id="project-library-heading" className="text-base font-semibold">
@@ -816,59 +1378,369 @@ export function StudioWorkbench() {
         )}
 
         {!isLoadingProjects && projects.length > 0 && (
-          <ul className="grid gap-3">
-            {projects.map((item) => {
-              const latestRun = item.latestRun;
-              return (
-                <li
-                  key={item.id}
-                  className="grid gap-3 border px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-                >
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate font-medium">{item.title}</p>
-                      <Badge variant={latestRun ? statusVariant(latestRun.status) : 'outline'}>
-                        {latestRun ? statusLabel(latestRun.status) : '未生成'}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {item.genre} · {item.chapterCount} 章 · 每章 {item.targetWordsPerChapter} 字
-                    </p>
-                    {latestRun && (
-                      <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
-                        <Progress
-                          value={latestRun.progress}
-                          className="h-1.5 w-24"
-                          aria-label={`${item.title} 生成进度`}
-                        />
-                        <span>{latestRun.progress}%</span>
-                        <span className="truncate">{latestRun.currentStep}</span>
-                      </div>
-                    )}
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!latestRun || openingRunId === latestRun.id}
-                    onClick={() => void openLatestRun(item)}
+          <div className="grid gap-3">
+            <ul className="grid gap-3">
+              {projects.map((item) => {
+                const latestRun = item.latestRun;
+                return (
+                  <li
+                    key={item.id}
+                    className="grid gap-3 border px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
                   >
-                    {openingRunId === latestRun?.id ? (
-                      <LoaderCircle className="animate-spin" />
-                    ) : (
-                      <FolderOpen />
-                    )}
-                    查看任务
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate font-medium">{item.title}</p>
+                        <Badge variant={latestRun ? statusVariant(latestRun.status) : 'outline'}>
+                          {latestRun ? statusLabel(latestRun.status) : '未生成'}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {item.genre} · {item.chapterCount} 章 · 每章 {item.targetWordsPerChapter} 字
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        已定稿 {item.finalizedChapterCount} 章 · 确认事实 {item.confirmedFactCount}{' '}
+                        ·{' '}
+                        {item.blockingFindingCount > 0
+                          ? `阻断问题 ${item.blockingFindingCount}`
+                          : '无阻断问题'}
+                      </p>
+                      {latestRun && (
+                        <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
+                          <Progress
+                            value={latestRun.progress}
+                            className="h-1.5 w-24"
+                            aria-label={`${item.title} 生成进度`}
+                          />
+                          <span>{latestRun.progress}%</span>
+                          <span className="truncate">{latestRun.currentStep}</span>
+                        </div>
+                      )}
+
+                      {activeProjectId === item.id && (
+                        <section
+                          id="adaptation-workspace"
+                          className="grid gap-5 border-b pt-2 pb-7 scroll-mt-6"
+                          aria-labelledby="adaptation-heading"
+                        >
+                          <div className="flex items-start gap-3">
+                            <Clapperboard className="mt-0.5 size-5 shrink-0 text-primary" />
+                            <div>
+                              <h2 id="adaptation-heading" className="text-base font-semibold">
+                                小说转剧本
+                              </h2>
+                              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                                创建时会锁定当前已定稿章节的内容与版本；后续修改小说不会覆盖已建立的改编来源。
+                              </p>
+                            </div>
+                          </div>
+
+                          {projectOverview?.finalizedChapterCount ? (
+                            <form className="grid gap-4" onSubmit={createAdaptation}>
+                              <div className="grid gap-4 sm:grid-cols-3">
+                                <div className="grid gap-2">
+                                  <Label htmlFor="adaptation-format">改编形态</Label>
+                                  <select
+                                    id="adaptation-format"
+                                    value={adaptationDraft.targetFormat}
+                                    onChange={(event) =>
+                                      setAdaptationDraft((current) => ({
+                                        ...current,
+                                        targetFormat: event.target
+                                          .value as AdaptationDraft['targetFormat'],
+                                      }))
+                                    }
+                                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                                  >
+                                    <option value="series">剧集</option>
+                                    <option value="short_drama">短剧</option>
+                                  </select>
+                                </div>
+                                <div className="grid gap-2">
+                                  <Label htmlFor="adaptation-episodes">集数</Label>
+                                  <Input
+                                    id="adaptation-episodes"
+                                    type="number"
+                                    min={1}
+                                    max={100}
+                                    value={adaptationDraft.episodeCount}
+                                    onChange={(event) =>
+                                      setAdaptationDraft((current) => ({
+                                        ...current,
+                                        episodeCount: Number(event.target.value),
+                                      }))
+                                    }
+                                    required
+                                  />
+                                </div>
+                                <div className="grid gap-2">
+                                  <Label htmlFor="adaptation-minutes">每集分钟数</Label>
+                                  <Input
+                                    id="adaptation-minutes"
+                                    type="number"
+                                    min={1}
+                                    max={120}
+                                    value={adaptationDraft.minutesPerEpisode}
+                                    onChange={(event) =>
+                                      setAdaptationDraft((current) => ({
+                                        ...current,
+                                        minutesPerEpisode: Number(event.target.value),
+                                      }))
+                                    }
+                                    required
+                                  />
+                                </div>
+                              </div>
+                              <div className="grid gap-4 sm:grid-cols-2">
+                                <div className="grid gap-2">
+                                  <Label htmlFor="adaptation-audience">目标观众</Label>
+                                  <Input
+                                    id="adaptation-audience"
+                                    value={adaptationDraft.targetAudience}
+                                    onChange={(event) =>
+                                      setAdaptationDraft((current) => ({
+                                        ...current,
+                                        targetAudience: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={500}
+                                  />
+                                </div>
+                                <div className="grid gap-2">
+                                  <Label htmlFor="adaptation-goal">改编目标</Label>
+                                  <Input
+                                    id="adaptation-goal"
+                                    value={adaptationDraft.adaptationGoal}
+                                    onChange={(event) =>
+                                      setAdaptationDraft((current) => ({
+                                        ...current,
+                                        adaptationGoal: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={10000}
+                                  />
+                                </div>
+                              </div>
+                              <div className="grid gap-2">
+                                <Label htmlFor="adaptation-preserve">必须保留</Label>
+                                <Textarea
+                                  id="adaptation-preserve"
+                                  value={adaptationDraft.mustPreserve}
+                                  onChange={(event) =>
+                                    setAdaptationDraft((current) => ({
+                                      ...current,
+                                      mustPreserve: event.target.value,
+                                    }))
+                                  }
+                                  className="min-h-20 resize-y"
+                                  maxLength={10000}
+                                  placeholder="例如：保留主角动机、世界观规则与终局反转。"
+                                />
+                              </div>
+                              <label className="flex items-start gap-3 rounded-md border px-3 py-3 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={adaptationDraft.rightsConfirmed}
+                                  onChange={(event) =>
+                                    setAdaptationDraft((current) => ({
+                                      ...current,
+                                      rightsConfirmed: event.target.checked,
+                                    }))
+                                  }
+                                  className="mt-0.5 size-4 accent-primary"
+                                />
+                                <span>我确认拥有该小说用于本次改编创作的必要权利。</span>
+                              </label>
+                              {adaptationError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {adaptationError}
+                                </p>
+                              )}
+                              <div className="flex justify-end">
+                                <Button
+                                  type="submit"
+                                  disabled={
+                                    isCreatingAdaptation || !adaptationDraft.rightsConfirmed
+                                  }
+                                >
+                                  {isCreatingAdaptation ? (
+                                    <LoaderCircle className="animate-spin" />
+                                  ) : (
+                                    <Clapperboard />
+                                  )}
+                                  创建改编项目
+                                </Button>
+                              </div>
+                            </form>
+                          ) : (
+                            <p className="text-sm text-muted-foreground">
+                              至少定稿一章小说后，即可建立可追溯的改编来源快照。
+                            </p>
+                          )}
+
+                          {isLoadingAdaptations && <Skeleton className="h-16 w-full" />}
+                          {!isLoadingAdaptations && adaptations.length > 0 && (
+                            <ul className="grid gap-2">
+                              {adaptations.map((adaptation) => (
+                                <li
+                                  key={adaptation.id}
+                                  className="flex flex-wrap items-center justify-between gap-3 border px-4 py-3 text-sm"
+                                >
+                                  <div>
+                                    <p className="font-medium">
+                                      {adaptation.targetFormat === 'series'
+                                        ? '剧集改编'
+                                        : '短剧改编'}
+                                    </p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      {adaptation.episodeCount} 集 · 每集{' '}
+                                      {adaptation.minutesPerEpisode} 分钟 · 锁定{' '}
+                                      {adaptation.sourceSnapshot.sourceChapterCount} 章来源
+                                    </p>
+                                  </div>
+                                  <Badge variant="outline">改编简报</Badge>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </section>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={openingRunId === item.id}
+                      onClick={() => void openProject(item)}
+                    >
+                      {openingRunId === item.id ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : (
+                        <FolderOpen />
+                      )}
+                      {latestRun ? '打开作品' : '继续创作'}
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+            {projects.length < projectTotal && (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  已显示 {projects.length} / {projectTotal} 部作品
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingMoreProjects}
+                  onClick={() => void loadProjects(projectPage + 1, true)}
+                >
+                  {isLoadingMoreProjects ? (
+                    <LoaderCircle className="animate-spin" />
+                  ) : (
+                    <FolderOpen />
+                  )}
+                  加载更多作品
+                </Button>
+              </div>
+            )}
+          </div>
         )}
       </section>
 
       <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <form onSubmit={submit} className="grid gap-6">
+        <form id="story-setup" onSubmit={submit} className="grid gap-6 scroll-mt-6">
+          <section
+            id="legacy-import"
+            className="grid gap-4 border-b pb-7 scroll-mt-6"
+            aria-labelledby="legacy-import-heading"
+          >
+            <div className="flex items-center gap-2">
+              <FileText className="size-4 text-primary" />
+              <h2 id="legacy-import-heading" className="text-base font-semibold">
+                导入旧作品
+              </h2>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Input
+                aria-label="选择旧作品文件"
+                type="file"
+                accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                disabled={isPreviewingImport || isConfirmingImport}
+                onChange={(event) => void previewProjectImport(event)}
+              />
+              {isPreviewingImport && (
+                <LoaderCircle className="size-4 animate-spin text-muted-foreground" />
+              )}
+            </div>
+            {importError && (
+              <p className="text-sm text-destructive" role="alert">
+                {importError}
+              </p>
+            )}
+            {importPreview && (
+              <div className="grid gap-3 border-l-2 border-primary/40 pl-4">
+                <p className="text-sm">
+                  已解析 {importPreview.chapters.length} 章，原始文件校验已保存。
+                </p>
+                <ul className="grid gap-1 text-xs text-muted-foreground">
+                  {importPreview.chapters.slice(0, 5).map((chapter) => (
+                    <li key={chapter.chapterNumber}>
+                      第 {chapter.chapterNumber} 章 · {chapter.title} · {chapter.characterCount}{' '}
+                      字符
+                    </li>
+                  ))}
+                  {importPreview.chapters.length > 5 && (
+                    <li>其余 {importPreview.chapters.length - 5} 章将在确认后迁移。</li>
+                  )}
+                </ul>
+                {importPreview.factCandidates.length > 0 && (
+                  <fieldset className="grid gap-2 border-l-2 border-amber-500/40 pl-3">
+                    <legend className="text-sm font-medium">导入事实候选（默认不写入）</legend>
+                    <p className="text-xs text-muted-foreground">
+                      仅勾选你确认无误的候选；未勾选内容会随原稿导入，但不会成为作品设定。
+                    </p>
+                    {importPreview.factCandidates.map((candidate) => {
+                      const checked = acceptedImportFactCandidateIds.includes(candidate.id);
+                      return (
+                        <label key={candidate.id} className="flex items-start gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setAcceptedImportFactCandidateIds((current) =>
+                                checked
+                                  ? current.filter((id) => id !== candidate.id)
+                                  : [...current, candidate.id],
+                              )
+                            }
+                          />
+                          <span>
+                            第 {candidate.chapterNumber} 章 · {candidate.subject} /{' '}
+                            {candidate.predicate} / {candidate.value}
+                            <span className="block text-xs text-muted-foreground">
+                              证据：{candidate.evidence}
+                            </span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </fieldset>
+                )}
+                <div>
+                  <Button
+                    type="button"
+                    onClick={() => void confirmProjectImport()}
+                    disabled={isConfirmingImport}
+                  >
+                    {isConfirmingImport ? <LoaderCircle className="animate-spin" /> : <Check />}
+                    确认迁移旧作品
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+
           <section className="grid gap-5 border-b pb-7">
             <div className="flex items-center gap-2">
               <FileText className="size-4 text-primary" />
@@ -887,18 +1759,10 @@ export function StudioWorkbench() {
             </div>
             <div className="grid gap-5 sm:grid-cols-3">
               <div className="grid gap-2">
-                <Label htmlFor="format">创作类型</Label>
-                <select
-                  id="format"
-                  value={project.format}
-                  onChange={(event) =>
-                    updateProject('format', event.target.value as CreateStudioProject['format'])
-                  }
-                  className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <option value="novel">小说</option>
-                  <option value="screenplay">剧本</option>
-                </select>
+                <Label>创作类型</Label>
+                <p className="flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground">
+                  小说
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="genre">题材</Label>
@@ -1005,17 +1869,235 @@ export function StudioWorkbench() {
           </div>
         </form>
 
-        <aside className="border-l pl-0 lg:pl-8">
+        <aside id="task-center" className="border-l pl-0 lg:pl-8 scroll-mt-6">
           <div className="grid gap-5">
             <div>
               <p className="text-sm font-semibold">运行状态</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {job ? job.currentStep : '填写故事设定后，生成任务会出现在这里。'}
               </p>
+              {job?.error && <p className="mt-2 text-xs text-destructive">最近错误：{job.error}</p>}
+              {job && (
+                <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
+                  <Progress
+                    value={job.progress}
+                    className="h-1.5 flex-1"
+                    aria-label="当前任务进度"
+                  />
+                  <span>{job.progress}%</span>
+                </div>
+              )}
             </div>
+            {job && !terminalStatuses.has(job.status) && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isCancellingJob}
+                onClick={() => void cancelJob()}
+              >
+                {isCancellingJob ? <LoaderCircle className="animate-spin" /> : <CircleAlert />}
+                取消生成
+              </Button>
+            )}
+            {job && (job.status === 'failed' || job.status === 'cancelled') && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isRetryingJob}
+                onClick={() => void retryJob()}
+              >
+                {isRetryingJob ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+                重新开始生成
+              </Button>
+            )}
+
+            {activeProjectId && (
+              <section
+                id="project-overview"
+                className="grid gap-4 border-t pt-5 scroll-mt-6"
+                aria-labelledby="project-status-heading"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p id="project-status-heading" className="text-sm font-semibold">
+                      作品状态
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">定稿、事实与后台处理进度。</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadProjectStatus(activeProjectId)}
+                    aria-label="刷新作品状态"
+                  >
+                    <RefreshCw />
+                  </Button>
+                </div>
+                {workspaceStatusError && (
+                  <p className="text-xs text-destructive">{workspaceStatusError}</p>
+                )}
+                {projectOverview && (
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-sm">
+                    <div>
+                      <dt className="text-xs text-muted-foreground">已定稿</dt>
+                      <dd className="mt-1 font-medium">
+                        {projectOverview.finalizedChapterCount} 章
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">确认事实</dt>
+                      <dd className="mt-1 font-medium">{projectOverview.confirmedFactCount}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">待裁决建议</dt>
+                      <dd className="mt-1 font-medium">{projectOverview.pendingFactChangeCount}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">阻断问题</dt>
+                      <dd className="mt-1 font-medium">{projectOverview.blockingFindingCount}</dd>
+                    </div>
+                  </dl>
+                )}
+                {projectOverview && projectOverview.pendingChapterReviewNumbers.length > 0 && (
+                  <div className="grid gap-2 border-t pt-3" role="status">
+                    <p className="text-xs font-medium text-destructive">
+                      {projectOverview.pendingChapterReviewNumbers.length} 个章节计划需要复核
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setChapterNumber(projectOverview.pendingChapterReviewNumbers[0] ?? 1)
+                      }
+                    >
+                      复核第 {projectOverview.pendingChapterReviewNumbers[0]} 章
+                    </Button>
+                  </div>
+                )}
+                {finalizationTasks.length > 0 && (
+                  <div className="grid gap-2 border-t pt-3">
+                    <p className="text-xs font-medium text-muted-foreground">定稿后台任务</p>
+                    {finalizationTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="grid gap-2 border-b pb-3 text-xs last:border-b-0 last:pb-0"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span>
+                            第 {task.chapterNumber} 章 · {task.type === 'summary' ? '摘要' : '索引'}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant={
+                                task.status === 'failed'
+                                  ? 'destructive'
+                                  : task.status === 'completed'
+                                    ? 'default'
+                                    : 'secondary'
+                              }
+                            >
+                              {
+                                {
+                                  pending: '等待',
+                                  running: '处理中',
+                                  completed: '完成',
+                                  failed: '失败',
+                                  recoverable: '可恢复',
+                                }[task.status]
+                              }
+                            </Badge>
+                            {(task.status === 'failed' || task.status === 'recoverable') && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={retryingFinalizationTaskId === task.id}
+                                onClick={() => void retryFinalizationTask(task)}
+                              >
+                                {retryingFinalizationTaskId === task.id ? (
+                                  <LoaderCircle className="animate-spin" />
+                                ) : (
+                                  <RefreshCw />
+                                )}
+                                重试
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        {(task.status === 'failed' || task.status === 'recoverable') && (
+                          <div
+                            className="grid gap-1 text-muted-foreground"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            <p>
+                              正文和事实裁决已保存；{task.type === 'summary' ? '摘要' : '索引'}
+                              尚未完成。
+                            </p>
+                            {task.lastError && <p>最近错误：{task.lastError}</p>}
+                            <p>可从该任务的保存进度继续，重试不会重复定稿。</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <section id="version-export" className="grid gap-2 border-t pt-3 scroll-mt-6">
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    格式
+                    <select
+                      aria-label="导出格式"
+                      value={exportFormat}
+                      onChange={(event) => setExportFormat(event.target.value as 'md' | 'txt')}
+                      className="h-8 border border-input bg-background px-2 text-sm"
+                    >
+                      <option value="md">Markdown (.md)</option>
+                      <option value="txt">纯文本 (.txt)</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={forceExport}
+                      onChange={(event) => setForceExport(event.target.checked)}
+                      className="size-4 accent-primary"
+                    />
+                    带未处理阻断问题导出
+                  </label>
+                  {forceExport && (
+                    <Input
+                      aria-label="强制导出原因"
+                      value={forceExportReason}
+                      maxLength={2000}
+                      onChange={(event) => setForceExportReason(event.target.value)}
+                      placeholder="填写导出原因"
+                    />
+                  )}
+                  {exportError && <p className="text-xs text-destructive">{exportError}</p>}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void exportProject()}
+                    disabled={isExporting}
+                  >
+                    {isExporting ? <LoaderCircle className="animate-spin" /> : <Download />}
+                    导出当前定稿
+                  </Button>
+                </section>
+              </section>
+            )}
 
             {blueprint && (
-              <section className="grid gap-4 border-t pt-5" aria-labelledby="blueprint-heading">
+              <section
+                id="blueprint-workspace"
+                className="grid gap-4 border-t pt-5 scroll-mt-6"
+                aria-labelledby="blueprint-heading"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p id="blueprint-heading" className="text-sm font-semibold">
@@ -1065,6 +2147,45 @@ export function StudioWorkbench() {
                 </div>
 
                 {blueprintError && <p className="text-sm text-destructive">{blueprintError}</p>}
+                {blueprintRestoreNotice && (
+                  <p className="text-sm text-muted-foreground" role="status">
+                    {blueprintRestoreNotice}
+                  </p>
+                )}
+
+                {blueprintHistory.length > 1 && (
+                  <div className="grid gap-2 border-t pt-4">
+                    <p className="text-sm font-semibold">蓝图历史</p>
+                    {blueprintHistory.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between gap-3 text-sm"
+                      >
+                        <span>
+                          蓝图 v{item.version} · {item.status === 'confirmed' ? '已确认' : '草稿'}
+                        </span>
+                        {item.id === blueprint.id ? (
+                          <Badge variant="secondary">当前</Badge>
+                        ) : item.status === 'confirmed' ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={restoringBlueprintId === item.id}
+                            onClick={() => void restoreBlueprint(item)}
+                          >
+                            {restoringBlueprintId === item.id ? (
+                              <LoaderCircle className="animate-spin" />
+                            ) : (
+                              <RefreshCw />
+                            )}
+                            恢复此版本
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {blueprint.status === 'confirmed' && !isEditingConfirmedBlueprint && (
                   <Button
@@ -1105,7 +2226,11 @@ export function StudioWorkbench() {
             )}
 
             {blueprint?.status === 'confirmed' && !isEditingConfirmedBlueprint && (
-              <section className="grid gap-4 border-t pt-5" aria-labelledby="chapter-plan-heading">
+              <section
+                id="chapter-workspace"
+                className="grid gap-4 border-t pt-5 scroll-mt-6"
+                aria-labelledby="chapter-plan-heading"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p id="chapter-plan-heading" className="text-sm font-semibold">
@@ -1114,8 +2239,20 @@ export function StudioWorkbench() {
                     <p className="mt-1 text-xs text-muted-foreground">草稿生成前必须确认</p>
                   </div>
                   {chapterPlan && (
-                    <Badge variant={chapterPlan.status === 'confirmed' ? 'default' : 'secondary'}>
-                      {chapterPlan.status === 'confirmed' ? '已确认' : '待确认'}
+                    <Badge
+                      variant={
+                        chapterPlan.needsReview
+                          ? 'destructive'
+                          : chapterPlan.status === 'confirmed'
+                            ? 'default'
+                            : 'secondary'
+                      }
+                    >
+                      {chapterPlan.needsReview
+                        ? '待复核'
+                        : chapterPlan.status === 'confirmed'
+                          ? '已确认'
+                          : '待确认'}
                     </Badge>
                   )}
                 </div>
@@ -1267,6 +2404,11 @@ export function StudioWorkbench() {
                 </div>
 
                 {chapterPlanError && <p className="text-sm text-destructive">{chapterPlanError}</p>}
+                {chapterPlan?.needsReview && (
+                  <p className="text-sm text-destructive" role="alert">
+                    蓝图已恢复到其他版本。请检查本章计划后重新确认，才能继续生成草稿。
+                  </p>
+                )}
 
                 {chapterPlan?.status === 'confirmed' && !isEditingConfirmedChapterPlan && (
                   <div className="grid gap-3">
@@ -1276,7 +2418,7 @@ export function StudioWorkbench() {
                         id="draft-prompt"
                         value={draftPrompt}
                         onChange={(event) => setDraftPrompt(event.target.value)}
-                        disabled={isGeneratingChapterDraft}
+                        disabled={isGeneratingChapterDraft || chapterPlan.needsReview}
                         maxLength={2000}
                         className="min-h-20 resize-y"
                         placeholder="例如：开场先写雨声，保持克制的心理描写。"
@@ -1297,7 +2439,7 @@ export function StudioWorkbench() {
                         type="button"
                         size="sm"
                         onClick={() => void createChapterDraft()}
-                        disabled={isGeneratingChapterDraft}
+                        disabled={isGeneratingChapterDraft || chapterPlan.needsReview}
                       >
                         {isGeneratingChapterDraft ? (
                           <LoaderCircle className="animate-spin" />
@@ -1310,7 +2452,9 @@ export function StudioWorkbench() {
                   </div>
                 )}
 
-                {(chapterPlan?.status !== 'confirmed' || isEditingConfirmedChapterPlan) && (
+                {(chapterPlan?.status !== 'confirmed' ||
+                  chapterPlan?.needsReview ||
+                  isEditingConfirmedChapterPlan) && (
                   <div className="flex flex-wrap gap-2">
                     <Button
                       type="button"
@@ -1327,7 +2471,9 @@ export function StudioWorkbench() {
                       size="sm"
                       onClick={() => void confirmChapterPlan()}
                       disabled={
-                        isSavingChapterPlan || !chapterPlan || chapterPlan.status === 'confirmed'
+                        isSavingChapterPlan ||
+                        !chapterPlan ||
+                        (chapterPlan.status === 'confirmed' && !chapterPlan.needsReview)
                       }
                     >
                       <Check />
@@ -1390,6 +2536,42 @@ export function StudioWorkbench() {
                         </div>
                       ))}
                     </div>
+                    {chapterFinalizations.length > 0 && (
+                      <div className="grid gap-2 border-t pt-3">
+                        <p className="text-sm font-semibold">终稿历史</p>
+                        {chapterFinalizations.map((finalization) => (
+                          <div
+                            key={finalization.id}
+                            className="flex items-center justify-between gap-2 text-sm"
+                          >
+                            <span>
+                              终稿版本{' '}
+                              {chapterRevisions.find(
+                                (revision) => revision.id === finalization.revisionId,
+                              )?.version ?? '历史'}
+                            </span>
+                            {finalization.revisionId === currentFinalRevisionId ? (
+                              <Badge variant="default">当前定稿</Badge>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={restoringFinalRevisionId === finalization.revisionId}
+                                onClick={() => void restoreFinalRevision(finalization)}
+                              >
+                                {restoringFinalRevisionId === finalization.revisionId ? (
+                                  <LoaderCircle className="animate-spin" />
+                                ) : (
+                                  <RefreshCw />
+                                )}
+                                恢复终稿
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {selectedRevision && (
                       <div className="grid gap-2">
                         <Label htmlFor="selected-chapter-draft">
@@ -1453,6 +2635,133 @@ export function StudioWorkbench() {
                         )}
                       </div>
                     )}
+                    {selectedRevision && (
+                      <div
+                        id="review-workspace"
+                        className="grid gap-3 border-t pt-4"
+                        aria-labelledby="review-findings-heading"
+                      >
+                        <div>
+                          <p id="review-findings-heading" className="text-sm font-semibold">
+                            硬事实审校
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            未处理的阻断问题会禁止章节定稿。
+                          </p>
+                        </div>
+                        {reviewFindings.length === 0 && (
+                          <p className="text-sm text-muted-foreground">当前版本没有审校问题。</p>
+                        )}
+                        {reviewFindings.map((finding) => (
+                          <div
+                            key={finding.id}
+                            className="grid gap-2 border-l-2 border-destructive/60 pl-3 text-sm"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge
+                                variant={
+                                  finding.status === 'open' && finding.severity === 'blocking'
+                                    ? 'destructive'
+                                    : 'outline'
+                                }
+                              >
+                                {finding.status === 'open'
+                                  ? '待处理'
+                                  : finding.status === 'resolved'
+                                    ? '已解决'
+                                    : finding.status === 'ignored'
+                                      ? '已忽略'
+                                      : '已记录变更'}
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">
+                                {finding.ruleId}
+                              </span>
+                            </div>
+                            <p className="whitespace-pre-wrap">{finding.evidence}</p>
+                            <p className="text-xs text-muted-foreground">
+                              建议：{finding.suggestedAction}
+                            </p>
+                            {finding.status === 'open' && (
+                              <>
+                                <Input
+                                  aria-label={`审校处理理由 ${finding.id}`}
+                                  value={reviewResolutionDrafts[finding.id]?.reason ?? ''}
+                                  maxLength={2000}
+                                  onChange={(event) => {
+                                    setReviewResolutionDrafts((current) => ({
+                                      ...current,
+                                      [finding.id]: {
+                                        reason: event.target.value,
+                                        resolvedValue: current[finding.id]?.resolvedValue ?? '',
+                                      },
+                                    }));
+                                  }}
+                                  placeholder="填写处理理由"
+                                />
+                                <Input
+                                  aria-label={`有意变更新事实值 ${finding.id}`}
+                                  value={reviewResolutionDrafts[finding.id]?.resolvedValue ?? ''}
+                                  maxLength={20000}
+                                  onChange={(event) => {
+                                    setReviewResolutionDrafts((current) => ({
+                                      ...current,
+                                      [finding.id]: {
+                                        reason: current[finding.id]?.reason ?? '',
+                                        resolvedValue: event.target.value,
+                                      },
+                                    }));
+                                  }}
+                                  placeholder="仅记录有意变更时填写新的事实值"
+                                />
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      resolvingReviewFindingId === finding.id ||
+                                      !(reviewResolutionDrafts[finding.id]?.reason ?? '').trim()
+                                    }
+                                    onClick={() => void resolveReviewFinding(finding, 'resolve')}
+                                  >
+                                    解决
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      resolvingReviewFindingId === finding.id ||
+                                      !(reviewResolutionDrafts[finding.id]?.reason ?? '').trim()
+                                    }
+                                    onClick={() => void resolveReviewFinding(finding, 'ignore')}
+                                  >
+                                    忽略
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      resolvingReviewFindingId === finding.id ||
+                                      !(reviewResolutionDrafts[finding.id]?.reason ?? '').trim() ||
+                                      !(
+                                        reviewResolutionDrafts[finding.id]?.resolvedValue ?? ''
+                                      ).trim()
+                                    }
+                                    onClick={() =>
+                                      void resolveReviewFinding(finding, 'intentional_change')
+                                    }
+                                  >
+                                    记录有意变更
+                                  </Button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {selectedRevision && comparisonRevisionId && (
                       <div className="grid gap-2">
                         <Label htmlFor="comparison-revision">与版本比较</Label>
@@ -1497,7 +2806,7 @@ export function StudioWorkbench() {
                       </div>
                     )}
                     {selectedRevision && (
-                      <div className="grid gap-3 border-t pt-4">
+                      <div id="facts-workspace" className="grid gap-3 border-t pt-4 scroll-mt-6">
                         <div>
                           <p className="text-sm font-semibold">事实建议</p>
                           <p className="mt-1 text-xs text-muted-foreground">
@@ -1685,9 +2994,9 @@ export function StudioWorkbench() {
                                   ? '已生效'
                                   : change.status === 'accepted_pending_finalization'
                                     ? '待定稿生效'
-                                  : change.status === 'rejected'
-                                    ? '已拒绝'
-                                    : '待裁决'}
+                                    : change.status === 'rejected'
+                                      ? '已拒绝'
+                                      : '待裁决'}
                               </Badge>
                             </div>
                             <p className="whitespace-pre-wrap text-sm leading-6">

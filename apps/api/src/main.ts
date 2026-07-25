@@ -115,7 +115,9 @@ async function bootstrap() {
 
   const config = getConfig()!;
 
-  const adapter = new FastifyAdapter();
+  // Legacy manuscript previews carry the source bytes as Base64 (up to 7.5 MB).
+  // Keep the transport ceiling above that payload while staying bounded globally.
+  const adapter = new FastifyAdapter({ bodyLimit: 11 * 1024 * 1024 });
   // 安全防护
   adapter.register(asFastifyPlugin(fastifyHelmet));
   // , {
@@ -276,7 +278,7 @@ async function bootstrap() {
   const appLogger = app.get(WINSTON_MODULE_PROVIDER) as Logger;
 
   // 添加优雅关闭的处理
-  const server = await app.listen(config.app.port ?? 13100, '0.0.0.0').then((server) => {
+  const server = await app.listen(config.app.port ?? 3108, '0.0.0.0').then((server) => {
     appLogger.info(`Server running at http://127.0.0.1:${config.app.port}`);
     appLogger.info(`Swagger: http://127.0.0.1:${config.app.port}/docs`);
     appLogger.info(`RapiDoc: http://127.0.0.1:${config.app.port}/api/apis`);

@@ -21,6 +21,29 @@ enum SexType {
   @@map("sex_type")
 }
 
+enum FileBucketVendor {
+  oss
+  us3
+  qiniu
+  s3
+  gcs
+  tos
+  tencent
+  ksyun
+
+  @@map("file_bucket_vendor")
+}
+
+enum FileEnvType {
+  dev
+  test
+  prod
+  produs
+  prodap
+
+  @@map("file_env_type")
+}
+
 model UserInfo {
   id           String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   ssoSub       String? @unique @map("sso_sub") @db.VarChar(255) /// SSO 用户唯一标识（sso.dofe.ai 的 user.id）
@@ -131,6 +154,7 @@ enum StudioGenerationRunStatus {
   RUNNING   @map("running")
   SUCCEEDED @map("succeeded")
   FAILED    @map("failed")
+  CANCELLED @map("cancelled")
 
   @@map("studio_generation_run_status")
 }
@@ -140,6 +164,14 @@ enum StudioGenerationRunType {
   CHAPTER_DRAFT @map("chapter_draft")
 
   @@map("studio_generation_run_type")
+}
+
+enum StudioProjectEventType {
+  GENERATION_STATUS        @map("generation_status")
+  FINALIZATION_TASK_STATUS @map("finalization_task_status")
+  FACT_CHANGE_DECISION     @map("fact_change_decision")
+
+  @@map("studio_project_event_type")
 }
 
 enum StudioBlueprintStatus {
@@ -172,6 +204,31 @@ enum StudioChapterFinalizationStatus {
   RECOVERABLE @map("recoverable")
 
   @@map("studio_chapter_finalization_status")
+}
+
+enum StudioProjectImportStatus {
+  PREVIEWED @map("previewed")
+  IMPORTED  @map("imported")
+}
+
+// An adaptation is a separate creative work. It never mutates the source
+// novel, and every adaptation starts from one immutable source snapshot.
+enum StudioAdaptationTargetFormat {
+  SERIES      @map("series")
+  SHORT_DRAMA @map("short_drama")
+
+  @@map("studio_adaptation_target_format")
+}
+
+enum StudioAdaptationStatus {
+  BRIEF_DRAFT      @map("brief_draft")
+  BLUEPRINT_REVIEW @map("blueprint_review")
+  SCENE_PLANNING   @map("scene_planning")
+  SCRIPT_WRITING   @map("script_writing")
+  REVIEW_READY     @map("review_ready")
+  DELIVERABLE      @map("deliverable")
+
+  @@map("studio_adaptation_status")
 }
 
 enum StudioFinalizationTaskStatus {
@@ -255,21 +312,121 @@ model StudioProject {
   createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  runs                 StudioGenerationRun[]
-  blueprints           StudioBlueprint[]              @relation("StudioProjectBlueprints")
-  currentBlueprint     StudioBlueprint?               @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
-  chapterPlans         StudioChapterPlan[]
-  chapterRevisions     StudioChapterRevision[]
-  chapterDraftPointers StudioChapterDraftPointer[]
-  chapterFinalizations StudioChapterFinalization[]
-  finalizationTasks    StudioFinalizationOutboxTask[]
-  chapterFinalPointers StudioChapterFinalPointer[]
-  facts                StudioFact[]
-  factChanges          StudioFactChange[]
-  reviewFindings       StudioReviewFinding[]
+  runs                      StudioGenerationRun[]
+  blueprints                StudioBlueprint[]                @relation("StudioProjectBlueprints")
+  currentBlueprint          StudioBlueprint?                 @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
+  chapterPlans              StudioChapterPlan[]
+  chapterRevisions          StudioChapterRevision[]
+  chapterDraftPointers      StudioChapterDraftPointer[]
+  chapterFinalizations      StudioChapterFinalization[]
+  finalizationFactSnapshots StudioFinalizationFactSnapshot[]
+  finalizationTasks         StudioFinalizationOutboxTask[]
+  chapterFinalPointers      StudioChapterFinalPointer[]
+  facts                     StudioFact[]
+  factChanges               StudioFactChange[]
+  reviewFindings            StudioReviewFinding[]
+  imports                   StudioProjectImport[]
+  events                    StudioProjectEvent[]
+  adaptations               StudioAdaptationProject[]        @relation("StudioAdaptationSourceProject")
+  adaptationSnapshots       StudioAdaptationSourceSnapshot[] @relation("StudioAdaptationSnapshotSourceProject")
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@map("studio_projects")
+}
+
+model StudioProjectEvent {
+  id        String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId String                 @map("project_id") @db.Uuid
+  type      StudioProjectEventType
+  payload   Json                   @default("{}")
+  createdAt DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project StudioProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@map("studio_project_events")
+}
+
+// Raw bytes are retained as Base64 until the author confirms the import.
+// Parsed chapter metadata is a preview only; it is never the source of truth.
+model StudioProjectImport {
+  id                  String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ownerId             String                    @map("owner_id") @db.Uuid
+  projectId           String?                   @unique @map("project_id") @db.Uuid
+  filename            String                    @db.VarChar(255)
+  sourceFormat        String                    @map("source_format") @db.VarChar(20)
+  sourceContentBase64 String                    @map("source_content_base64") @db.Text
+  contentHash         String                    @map("content_hash") @db.Char(64)
+  preview             Json                      @default("{}")
+  status              StudioProjectImportStatus @default(PREVIEWED)
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  confirmedAt         DateTime?                 @map("confirmed_at") @db.Timestamptz(6)
+
+  project StudioProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@map("studio_project_imports")
+}
+
+model StudioAdaptationProject {
+  id                String                       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  ownerId           String                       @map("owner_id") @db.Uuid
+  sourceProjectId   String                       @map("source_project_id") @db.Uuid
+  targetFormat      StudioAdaptationTargetFormat @map("target_format")
+  episodeCount      Int                          @map("episode_count")
+  minutesPerEpisode Int                          @map("minutes_per_episode")
+  targetAudience    String                       @default("") @map("target_audience") @db.VarChar(500)
+  adaptationGoal    String                       @default("") @map("adaptation_goal") @db.Text
+  mustPreserve      String                       @default("") @map("must_preserve") @db.Text
+  rightsConfirmedAt DateTime                     @map("rights_confirmed_at") @db.Timestamptz(6)
+  status            StudioAdaptationStatus       @default(BRIEF_DRAFT)
+  createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sourceProject  StudioProject                   @relation("StudioAdaptationSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
+  sourceSnapshot StudioAdaptationSourceSnapshot?
+
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@index([sourceProjectId, createdAt(sort: Desc)])
+  @@map("studio_adaptation_projects")
+}
+
+// Source text is copied when an author starts an adaptation. Later edits to
+// the novel cannot silently change the material used for screenplay work.
+model StudioAdaptationSourceSnapshot {
+  id                     String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId           String   @unique @map("adaptation_id") @db.Uuid
+  sourceProjectId        String   @map("source_project_id") @db.Uuid
+  sourceProjectTitle     String   @map("source_project_title") @db.VarChar(120)
+  sourceProjectUpdatedAt DateTime @map("source_project_updated_at") @db.Timestamptz(6)
+  sourceChapterCount     Int      @map("source_chapter_count")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  adaptation    StudioAdaptationProject         @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
+  sourceProject StudioProject                   @relation("StudioAdaptationSnapshotSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
+  chapters      StudioAdaptationSourceChapter[]
+
+  @@index([sourceProjectId, createdAt(sort: Desc)])
+  @@map("studio_adaptation_source_snapshots")
+}
+
+model StudioAdaptationSourceChapter {
+  id               String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  snapshotId       String   @map("snapshot_id") @db.Uuid
+  sourceRevisionId String   @map("source_revision_id") @db.Uuid
+  chapterNumber    Int      @map("chapter_number")
+  title            String   @db.VarChar(200)
+  content          String   @db.Text
+  contentHash      String   @map("content_hash") @db.Char(64)
+  wordCount        Int      @map("word_count")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  snapshot       StudioAdaptationSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  sourceRevision StudioChapterRevision          @relation(fields: [sourceRevisionId], references: [id], onDelete: Restrict)
+
+  @@unique([snapshotId, chapterNumber])
+  @@index([sourceRevisionId])
+  @@map("studio_adaptation_source_chapters")
 }
 
 model StudioGenerationRun {
@@ -333,6 +490,7 @@ model StudioChapterPlan {
   chapterNumber  Int                     @map("chapter_number")
   version        Int
   status         StudioChapterPlanStatus @default(DRAFT)
+  needsReview    Boolean                 @default(false) @map("needs_review")
   title          String                  @db.VarChar(200)
   goal           String                  @db.Text
   conflict       String                  @default("") @db.Text
@@ -379,16 +537,17 @@ model StudioChapterRevision {
   createdAt        DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  project          StudioProject              @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  chapterPlan      StudioChapterPlan          @relation(fields: [chapterPlanId], references: [id], onDelete: Restrict)
-  sourceRun        StudioGenerationRun?       @relation(fields: [runId], references: [id], onDelete: Restrict)
-  sourceRevision   StudioChapterRevision?     @relation("StudioRevisionLineage", fields: [sourceRevisionId], references: [id], onDelete: SetNull)
-  derivedRevisions StudioChapterRevision[]    @relation("StudioRevisionLineage")
-  currentPointer   StudioChapterDraftPointer?
-  finalization     StudioChapterFinalization?
-  currentFinal     StudioChapterFinalPointer?
-  factChanges      StudioFactChange[]
-  reviewFindings   StudioReviewFinding[]
+  project                  StudioProject                   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  chapterPlan              StudioChapterPlan               @relation(fields: [chapterPlanId], references: [id], onDelete: Restrict)
+  sourceRun                StudioGenerationRun?            @relation(fields: [runId], references: [id], onDelete: Restrict)
+  sourceRevision           StudioChapterRevision?          @relation("StudioRevisionLineage", fields: [sourceRevisionId], references: [id], onDelete: SetNull)
+  derivedRevisions         StudioChapterRevision[]         @relation("StudioRevisionLineage")
+  currentPointer           StudioChapterDraftPointer?
+  finalization             StudioChapterFinalization?
+  currentFinal             StudioChapterFinalPointer?
+  factChanges              StudioFactChange[]
+  reviewFindings           StudioReviewFinding[]
+  adaptationSourceChapters StudioAdaptationSourceChapter[]
 
   @@unique([projectId, chapterNumber, version])
   @@index([projectId, chapterNumber, createdAt(sort: Desc)])
@@ -515,25 +674,52 @@ model StudioChapterFinalPointer {
 // The transaction record is the durable source for post-finalization tasks.
 // Summary and index work remain visibly pending until their executors exist.
 model StudioChapterFinalization {
-  id            String                          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  projectId     String                          @map("project_id") @db.Uuid
-  revisionId    String                          @unique @map("revision_id") @db.Uuid
-  chapterNumber Int                             @map("chapter_number")
-  status        StudioChapterFinalizationStatus @default(FINALIZED)
-  summaryStatus StudioFinalizationTaskStatus    @default(PENDING) @map("summary_status")
-  indexStatus   StudioFinalizationTaskStatus    @default(PENDING) @map("index_status")
-  summary       String?                         @db.Text
-  error         String?                         @db.Text
-  finalizedAt   DateTime                        @default(now()) @map("finalized_at") @db.Timestamptz(6)
-  createdAt     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                   String                          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId            String                          @map("project_id") @db.Uuid
+  revisionId           String                          @unique @map("revision_id") @db.Uuid
+  chapterNumber        Int                             @map("chapter_number")
+  status               StudioChapterFinalizationStatus @default(FINALIZED)
+  factSnapshotRecorded Boolean                         @default(false) @map("fact_snapshot_recorded")
+  summaryStatus        StudioFinalizationTaskStatus    @default(PENDING) @map("summary_status")
+  indexStatus          StudioFinalizationTaskStatus    @default(PENDING) @map("index_status")
+  summary              String?                         @db.Text
+  error                String?                         @db.Text
+  finalizedAt          DateTime                        @default(now()) @map("finalized_at") @db.Timestamptz(6)
+  createdAt            DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  project  StudioProject                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  revision StudioChapterRevision          @relation(fields: [revisionId], references: [id], onDelete: Restrict)
-  tasks    StudioFinalizationOutboxTask[]
+  project       StudioProject                    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revision      StudioChapterRevision            @relation(fields: [revisionId], references: [id], onDelete: Restrict)
+  tasks         StudioFinalizationOutboxTask[]
+  factSnapshots StudioFinalizationFactSnapshot[]
 
   @@index([projectId, chapterNumber, finalizedAt(sort: Desc)])
   @@map("studio_chapter_finalizations")
+}
+
+// A finalization snapshot captures the confirmed fact state used by all later
+// generation. Restoring a historical finalization reconstructs current facts
+// from this immutable record instead of mixing facts from two timelines.
+model StudioFinalizationFactSnapshot {
+  id               String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  finalizationId   String           @map("finalization_id") @db.Uuid
+  projectId        String           @map("project_id") @db.Uuid
+  sourceFactId     String           @map("source_fact_id") @db.Uuid
+  factType         String           @map("fact_type") @db.VarChar(80)
+  subject          String           @db.VarChar(200)
+  predicate        String           @db.VarChar(200)
+  value            String           @db.Text
+  effectiveChapter Int              @map("effective_chapter")
+  status           StudioFactStatus
+  schemaVersion    Int              @default(1) @map("schema_version")
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  finalization StudioChapterFinalization @relation(fields: [finalizationId], references: [id], onDelete: Restrict)
+  project      StudioProject             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([finalizationId, sourceFactId])
+  @@index([projectId, finalizationId])
+  @@map("studio_finalization_fact_snapshots")
 }
 
 // The outbox is committed with the finalization and can be retried independently.

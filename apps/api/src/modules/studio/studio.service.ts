@@ -1,5 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
+import * as mammoth from 'mammoth';
+import { z } from 'zod';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import type { Logger } from 'winston';
 import { apiError } from '@dofe/infra-common';
@@ -14,9 +16,15 @@ import {
   StudioFactChangeService,
   StudioFactService,
   StudioFinalizationOutboxTaskService,
+  StudioFinalizationFactSnapshotService,
   StudioReviewFindingService,
   StudioGenerationRunService,
   StudioProjectService,
+  StudioProjectImportService,
+  StudioProjectEventService,
+  StudioAdaptationProjectService,
+  StudioAdaptationSourceSnapshotService,
+  StudioAdaptationSourceChapterService,
 } from '@app/db';
 import type {
   StudioBlueprint,
@@ -25,22 +33,36 @@ import type {
   StudioChapterRevision,
   StudioFact,
   StudioFactChange,
+  StudioFinalizationFactSnapshot,
+  StudioReviewFinding,
   StudioGenerationRun,
   StudioProject,
+  StudioAdaptationProject,
+  StudioAdaptationSourceSnapshot,
 } from '@prisma/client';
 import { CommonErrorCode } from '@repo/contracts/errors';
+import { StudioProjectImportPreviewDataSchema } from '@repo/contracts';
 import type {
   CreateStudioProject,
+  PreviewStudioProjectImport,
+  StudioProjectImportPreview,
+  ConfirmStudioProjectImport,
+  StudioProjectImportResult,
+  StudioProjectImportFactCandidate,
   CreateStudioChapterDraft,
   CreateStudioAuthorRevision,
   GenerationJob,
   StudioBlueprint as StudioBlueprintResponse,
+  StudioBlueprintListQuery,
+  StudioBlueprintListResponse,
   StudioChapterPlan as StudioChapterPlanResponse,
   StudioChapterRevision as StudioChapterRevisionResponse,
   StudioChapterRevisionListQuery,
   StudioChapterRevisionListResponse,
   StudioChapterRevisionDiff,
   StudioChapterFinalization as StudioChapterFinalizationResponse,
+  StudioChapterFinalizationListQuery,
+  StudioChapterFinalizationListResponse,
   CreateStudioFactChange,
   ResolveStudioFactChange,
   StudioFactChange as StudioFactChangeResponse,
@@ -50,18 +72,39 @@ import type {
   StudioFact as StudioFactResponse,
   StudioFactListQuery,
   StudioFactListResponse,
+  ResolveStudioReviewFinding,
+  StudioReviewFinding as StudioReviewFindingResponse,
+  StudioReviewFindingListQuery,
+  StudioReviewFindingListResponse,
   StudioProjectListQuery,
   StudioProjectListResponse,
+  StudioProjectExport,
+  StudioProjectExportQuery,
+  StudioProjectOverview,
+  StudioProjectEvent as StudioProjectEventResponse,
+  StudioProjectEventListQuery,
+  StudioProjectEventListResponse,
+  StudioFinalizationTask as StudioFinalizationTaskResponse,
+  StudioFinalizationTaskListQuery,
+  StudioFinalizationTaskListResponse,
   UpdateStudioChapterPlan,
   UpdateStudioBlueprint,
+  StudioBlueprintRestoreResult,
+  StudioChapterFinalRestoreResult,
+  CreateStudioAdaptation,
+  StudioAdaptationProject as StudioAdaptationProjectResponse,
+  StudioAdaptationListQuery,
+  StudioAdaptationListResponse,
 } from '@repo/contracts';
 import { NovelRuntimeClient } from '../../clients/novel-runtime/novel-runtime.client';
+import { AuditLogService } from '@app/audit-log';
 
 const runStatusMap = {
   QUEUED: 'queued',
   RUNNING: 'running',
   SUCCEEDED: 'succeeded',
   FAILED: 'failed',
+  CANCELLED: 'cancelled',
 } as const satisfies Record<StudioGenerationRun['status'], GenerationJob['status']>;
 
 const dbStatusMap = {
@@ -69,6 +112,7 @@ const dbStatusMap = {
   running: 'RUNNING',
   succeeded: 'SUCCEEDED',
   failed: 'FAILED',
+  cancelled: 'CANCELLED',
 } as const;
 
 const blueprintStatusMap = {
@@ -92,13 +136,28 @@ const chapterRevisionStatusMap = {
 
 const MAX_DIFF_LINES = 500;
 
-type ProjectWithLatestRun = StudioProject & { runs: StudioGenerationRun[] };
+type ProjectWithLatestRun = StudioProject & {
+  runs: StudioGenerationRun[];
+  chapterFinalPointers: { id: string }[];
+  facts: { id: string }[];
+  reviewFindings: { id: string }[];
+};
+type ImportedChapter = {
+  chapterNumber: number;
+  title: string;
+  content: string;
+};
 
 @Injectable()
 export class StudioService {
   constructor(
     private readonly runtimeClient: NovelRuntimeClient,
     private readonly projectService: StudioProjectService,
+    private readonly projectImportService: StudioProjectImportService,
+    private readonly projectEventService: StudioProjectEventService,
+    private readonly adaptationProjectService: StudioAdaptationProjectService,
+    private readonly adaptationSourceSnapshotService: StudioAdaptationSourceSnapshotService,
+    private readonly adaptationSourceChapterService: StudioAdaptationSourceChapterService,
     private readonly runService: StudioGenerationRunService,
     private readonly blueprintService: StudioBlueprintService,
     private readonly chapterPlanService: StudioChapterPlanService,
@@ -107,10 +166,12 @@ export class StudioService {
     private readonly chapterFinalPointerService: StudioChapterFinalPointerService,
     private readonly chapterFinalizationService: StudioChapterFinalizationService,
     private readonly finalizationOutboxTaskService: StudioFinalizationOutboxTaskService,
+    private readonly finalizationFactSnapshotService: StudioFinalizationFactSnapshotService,
     private readonly factService: StudioFactService,
     private readonly reviewFindingService: StudioReviewFindingService,
     private readonly factChangeService: StudioFactChangeService,
     private readonly unitOfWork: UnitOfWorkService,
+    private readonly auditLogService: AuditLogService,
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {}
 
@@ -128,13 +189,24 @@ export class StudioService {
       progress: 0,
       currentStep: 'Queued for generation',
     });
+    await this.projectEventService.create({
+      project: { connect: { id: project.id } },
+      type: 'GENERATION_STATUS',
+      payload: { runId, status: 'queued', progress: 0, currentStep: 'Queued for generation' },
+    });
+    await this.auditLogService.logCreate('studio.project', project.id, userId, {
+      runId,
+      title: project.title,
+      format: project.format,
+      chapterCount: project.chapterCount,
+    });
 
     try {
       const runtimeJob = await this.runtimeClient.createJob(userId, project.id, runId, input);
       const run = await this.syncRun(runId, runtimeJob);
       return this.toGenerationJob(project, run);
     } catch (error) {
-      await this.runService.update(
+      const failedRun = await this.runService.update(
         { id: runId },
         {
           status: 'FAILED',
@@ -143,6 +215,18 @@ export class StudioService {
           error: '创作运行时暂时不可用，请稍后重试。',
         },
       );
+      await this.projectService.update({ id: project.id }, { updatedAt: failedRun.updatedAt });
+      await this.projectEventService.create({
+        project: { connect: { id: project.id } },
+        type: 'GENERATION_STATUS',
+        payload: {
+          runId,
+          status: 'failed',
+          progress: 100,
+          currentStep: failedRun.currentStep,
+          failureReason: failedRun.error,
+        },
+      });
       this.logger.error('Studio run dispatch failed', {
         projectId: project.id,
         runId,
@@ -156,7 +240,7 @@ export class StudioService {
 
   async getJob(userId: string, jobId: string): Promise<GenerationJob> {
     const { project, run } = await this.getOwnedRun(userId, jobId);
-    if (run.status === 'SUCCEEDED' || run.status === 'FAILED') {
+    if (run.status === 'SUCCEEDED' || run.status === 'FAILED' || run.status === 'CANCELLED') {
       if (run.status === 'SUCCEEDED' && run.type === 'CHAPTER_DRAFT') {
         await this.createChapterRevisionFromRun(run);
       }
@@ -180,12 +264,21 @@ export class StudioService {
 
   async retryJob(userId: string, jobId: string): Promise<GenerationJob> {
     const { project, run } = await this.getOwnedRun(userId, jobId);
-    if (run.status === 'SUCCEEDED') {
-      throw apiError(CommonErrorCode.BadRequest, { message: '已完成的创作任务无需重试。' });
+    if (run.status !== 'FAILED' && run.status !== 'CANCELLED') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '只有失败或已取消的创作任务可以重试。',
+      });
     }
     try {
       const runtimeJob = await this.runtimeClient.retryJob(userId, jobId);
       const syncedRun = await this.syncRun(jobId, runtimeJob);
+      await this.auditLogService.logUpdate(
+        'studio.generation_run',
+        jobId,
+        userId,
+        { action: 'retry' },
+        { projectId: project.id },
+      );
       return this.toGenerationJob(project, syncedRun);
     } catch (error) {
       this.logger.error('Studio run retry dispatch failed', {
@@ -199,14 +292,81 @@ export class StudioService {
     }
   }
 
+  async cancelJob(userId: string, jobId: string): Promise<GenerationJob> {
+    const { project, run } = await this.getOwnedRun(userId, jobId);
+    if (run.status === 'SUCCEEDED' || run.status === 'FAILED' || run.status === 'CANCELLED') {
+      return this.toGenerationJob(project, run);
+    }
+    try {
+      const runtimeJob = await this.runtimeClient.cancelJob(userId, jobId);
+      const syncedRun = await this.syncRun(jobId, runtimeJob);
+      await this.auditLogService.logUpdate(
+        'studio.generation_run',
+        jobId,
+        userId,
+        { action: 'cancel' },
+        { projectId: project.id },
+      );
+      return this.toGenerationJob(project, syncedRun);
+    } catch (error) {
+      this.logger.error('Studio run cancellation failed', {
+        projectId: project.id,
+        runId: jobId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '创作任务暂时无法取消，请稍后重试。',
+      });
+    }
+  }
+
+  async syncActiveGenerationRuns(): Promise<void> {
+    const pageSize = 100;
+    const activeRuns: Array<StudioGenerationRun & { project: { ownerId: string } }> = [];
+    for (let page = 1; ; page += 1) {
+      const result = await this.runService.list(
+        { status: { in: ['QUEUED', 'RUNNING'] } },
+        { page, limit: pageSize, orderBy: { updatedAt: 'asc' } },
+        { include: { project: { select: { ownerId: true } } } },
+      );
+      activeRuns.push(
+        ...(result.list as Array<StudioGenerationRun & { project: { ownerId: string } }>),
+      );
+      if (result.list.length < pageSize || activeRuns.length >= result.total) break;
+    }
+
+    for (const run of activeRuns) {
+      try {
+        const runtimeJob = await this.runtimeClient.getJob(run.project.ownerId, run.id);
+        await this.syncRun(run.id, runtimeJob);
+      } catch (error) {
+        this.logger.warn('Studio generation run sync failed', {
+          runId: run.id,
+          projectId: run.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   async listProjects(
     userId: string,
     query: StudioProjectListQuery,
   ): Promise<StudioProjectListResponse> {
     const result = await this.projectService.list(
       { ownerId: userId },
-      { page: query.page, limit: query.limit },
-      { include: { runs: { orderBy: { createdAt: 'desc' }, take: 1 } } },
+      { page: query.page, limit: query.limit, orderBy: { updatedAt: 'desc' } },
+      {
+        include: {
+          runs: { orderBy: { createdAt: 'desc' }, take: 1 },
+          chapterFinalPointers: { select: { id: true } },
+          facts: { where: { status: 'CONFIRMED' }, select: { id: true } },
+          reviewFindings: {
+            where: { severity: 'BLOCKING', status: 'OPEN' },
+            select: { id: true },
+          },
+        },
+      },
     );
     const projects = result as unknown as {
       list: ProjectWithLatestRun[];
@@ -221,6 +381,636 @@ export class StudioService {
     };
   }
 
+  async listAdaptations(
+    userId: string,
+    projectId: string,
+    query: StudioAdaptationListQuery,
+  ): Promise<StudioAdaptationListResponse> {
+    await this.getOwnedProject(userId, projectId);
+    const adaptations = await this.adaptationProjectService.list(
+      { ownerId: userId, sourceProjectId: projectId },
+      { page: query.page, limit: query.limit, orderBy: { updatedAt: 'desc' } },
+    );
+    const snapshots = await Promise.all(
+      adaptations.list.map((adaptation) =>
+        this.adaptationSourceSnapshotService.get({ adaptationId: adaptation.id }),
+      ),
+    );
+
+    return {
+      ...adaptations,
+      list: adaptations.list.map((adaptation, index) => {
+        const snapshot = snapshots[index];
+        if (!snapshot) {
+          throw apiError(CommonErrorCode.InternalServerError, {
+            message: '改编来源快照缺失，请联系支持人员。',
+          });
+        }
+        return this.toAdaptation(adaptation, snapshot);
+      }),
+    };
+  }
+
+  async createAdaptation(
+    userId: string,
+    projectId: string,
+    input: CreateStudioAdaptation,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const sourceProject = await this.getOwnedProject(userId, projectId);
+    if (sourceProject.format !== 'novel') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '只有小说作品可以创建剧本改编项目。',
+      });
+    }
+
+    const pointers = await this.chapterFinalPointerService.list(
+      { projectId },
+      { page: 1, limit: sourceProject.chapterCount, orderBy: { chapterNumber: 'asc' } },
+    );
+    if (pointers.total === 0) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请至少定稿一章小说后再开始改编。',
+      });
+    }
+
+    const sourceChapters = await Promise.all(
+      pointers.list.map(async (pointer) => {
+        const revision = await this.chapterRevisionService.getById(pointer.revisionId);
+        if (
+          !revision ||
+          revision.projectId !== projectId ||
+          revision.chapterNumber !== pointer.chapterNumber ||
+          revision.status !== 'FINALIZED'
+        ) {
+          throw apiError(CommonErrorCode.BadRequest, {
+            message: '定稿章节状态已变化，请刷新后重试。',
+          });
+        }
+        const chapterPlan = await this.chapterPlanService.getById(revision.chapterPlanId);
+        if (
+          !chapterPlan ||
+          chapterPlan.projectId !== projectId ||
+          chapterPlan.chapterNumber !== pointer.chapterNumber
+        ) {
+          throw apiError(CommonErrorCode.BadRequest, {
+            message: '定稿章节计划已变化，请刷新后重试。',
+          });
+        }
+        return { revision, title: chapterPlan.title };
+      }),
+    );
+
+    const { adaptation, snapshot } = await this.unitOfWork.execute(async () => {
+      const adaptation = await this.adaptationProjectService.create({
+        ownerId: userId,
+        sourceProject: { connect: { id: projectId } },
+        targetFormat: input.targetFormat === 'short_drama' ? 'SHORT_DRAMA' : 'SERIES',
+        episodeCount: input.episodeCount,
+        minutesPerEpisode: input.minutesPerEpisode,
+        targetAudience: input.targetAudience,
+        adaptationGoal: input.adaptationGoal,
+        mustPreserve: input.mustPreserve,
+        rightsConfirmedAt: new Date(),
+        status: 'BRIEF_DRAFT',
+      });
+      const snapshot = await this.adaptationSourceSnapshotService.create({
+        adaptation: { connect: { id: adaptation.id } },
+        sourceProject: { connect: { id: projectId } },
+        sourceProjectTitle: sourceProject.title,
+        sourceProjectUpdatedAt: sourceProject.updatedAt,
+        sourceChapterCount: sourceChapters.length,
+      });
+      await this.adaptationSourceChapterService.createMany(
+        sourceChapters.map(({ revision, title }) => ({
+          snapshotId: snapshot.id,
+          sourceRevisionId: revision.id,
+          chapterNumber: revision.chapterNumber,
+          title,
+          content: revision.content,
+          contentHash: revision.contentHash,
+          wordCount: revision.wordCount,
+        })),
+      );
+      return { adaptation, snapshot };
+    });
+
+    await this.auditLogService.logCreate('studio.adaptation', adaptation.id, userId, {
+      sourceProjectId: projectId,
+      sourceSnapshotId: snapshot.id,
+      sourceChapterCount: sourceChapters.length,
+      targetFormat: input.targetFormat,
+      episodeCount: input.episodeCount,
+    });
+    return this.toAdaptation(adaptation, snapshot);
+  }
+
+  async previewProjectImport(
+    userId: string,
+    input: PreviewStudioProjectImport,
+  ): Promise<StudioProjectImportPreview> {
+    const parsed = await this.parseImportedManuscript(input);
+    const factCandidates = this.importFactCandidates(parsed.chapters);
+    const imported = await this.projectImportService.create({
+      ownerId: userId,
+      filename: input.filename,
+      sourceFormat: parsed.sourceFormat,
+      sourceContentBase64: input.contentBase64,
+      contentHash: parsed.contentHash,
+      preview: {
+        chapters: parsed.chapters.map((chapter) => ({
+          chapterNumber: chapter.chapterNumber,
+          title: chapter.title,
+          characterCount: chapter.content.length,
+          excerpt: this.importExcerpt(chapter.content),
+        })),
+        factCandidates,
+        acceptedFactCandidateIds: [],
+      },
+    });
+    return {
+      importId: imported.id,
+      filename: imported.filename,
+      sourceFormat: parsed.sourceFormat,
+      contentHash: parsed.contentHash,
+      chapters: parsed.chapters.map((chapter) => ({
+        chapterNumber: chapter.chapterNumber,
+        title: chapter.title,
+        characterCount: chapter.content.length,
+        excerpt: this.importExcerpt(chapter.content),
+      })),
+      factCandidates,
+    };
+  }
+
+  async confirmProjectImport(
+    userId: string,
+    importId: string,
+    input: ConfirmStudioProjectImport,
+  ): Promise<StudioProjectImportResult> {
+    const imported = await this.projectImportService.getById(importId);
+    if (!imported || imported.ownerId !== userId) {
+      throw apiError(CommonErrorCode.NotFound, { message: '存稿导入预览不存在。' });
+    }
+    if (imported.status === 'IMPORTED') {
+      if (!imported.projectId) {
+        throw apiError(CommonErrorCode.InternalServerError, { message: '导入记录缺少作品关联。' });
+      }
+      const project = await this.getOwnedProject(userId, imported.projectId);
+      return {
+        importId,
+        project: this.toProjectSummary(project),
+        importedChapterCount: project.chapterCount,
+        importedFactCount: this.importedFactCount(imported.preview),
+      };
+    }
+
+    const parsed = await this.parseImportedManuscript({
+      filename: imported.filename,
+      format: imported.sourceFormat as 'txt' | 'md' | 'docx',
+      contentBase64: imported.sourceContentBase64,
+    });
+    if (parsed.contentHash !== imported.contentHash) {
+      throw apiError(CommonErrorCode.BadRequest, { message: '原始存稿校验失败，请重新上传。' });
+    }
+    const storedPreview = StudioProjectImportPreviewDataSchema.safeParse(imported.preview);
+    const factCandidates = storedPreview.success
+      ? storedPreview.data.factCandidates
+      : this.importFactCandidates(parsed.chapters);
+    const acceptedFactCandidateIds = input.acceptedFactCandidateIds ?? [];
+    const acceptedCandidateIds = new Set(acceptedFactCandidateIds);
+    if (acceptedCandidateIds.size !== acceptedFactCandidateIds.length) {
+      throw apiError(CommonErrorCode.BadRequest, { message: '导入事实候选不能重复选择。' });
+    }
+    const acceptedFactCandidates = factCandidates.filter((candidate) =>
+      acceptedCandidateIds.has(candidate.id),
+    );
+    if (acceptedFactCandidates.length !== acceptedCandidateIds.size) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '导入事实候选已失效，请重新预览后确认。',
+      });
+    }
+
+    const project = await this.unitOfWork.execute(async () => {
+      const created = await this.projectService.create({
+        ownerId: userId,
+        title: input.title,
+        format: 'novel',
+        genre: input.genre,
+        premise: `从《${imported.filename}》导入的既有存稿。`,
+        chapterCount: parsed.chapters.length,
+        targetWordsPerChapter: input.targetWordsPerChapter,
+        guidance: input.guidance,
+        generateOutline: false,
+      });
+      const outline = parsed.chapters
+        .map((chapter) => `第 ${chapter.chapterNumber} 章：${chapter.title}`)
+        .join('\n');
+      const blueprint = await this.blueprintService.create({
+        project: { connect: { id: created.id } },
+        version: 1,
+        status: 'CONFIRMED',
+        architecture: `从《${imported.filename}》导入的小说正文。`,
+        outline,
+        source: 'import',
+        schemaVersion: 1,
+        contentHash: this.hashBlueprint(`从《${imported.filename}》导入的小说正文。`, outline),
+      });
+      await this.projectService.update(
+        { id: created.id },
+        { currentBlueprint: { connect: { id: blueprint.id } } },
+      );
+      const importedFacts = await Promise.all(
+        acceptedFactCandidates.map((candidate) =>
+          this.factService.create({
+            project: { connect: { id: created.id } },
+            factType: candidate.factType,
+            subject: candidate.subject,
+            predicate: candidate.predicate,
+            value: candidate.value,
+            effectiveChapter: candidate.chapterNumber,
+            status: 'CONFIRMED',
+          }),
+        ),
+      );
+      for (const chapter of parsed.chapters) {
+        const planInput: UpdateStudioChapterPlan = {
+          title: chapter.title,
+          goal: '保留导入存稿的既有章节内容。',
+          conflict: '',
+          characters: [],
+          location: '',
+          timeConstraint: '',
+          foreshadowing: '',
+          hook: '',
+        };
+        const plan = await this.chapterPlanService.create({
+          project: { connect: { id: created.id } },
+          blueprint: { connect: { id: blueprint.id } },
+          chapterNumber: chapter.chapterNumber,
+          version: 1,
+          status: 'CONFIRMED',
+          needsReview: false,
+          ...planInput,
+          source: 'import',
+          schemaVersion: 1,
+          contentHash: this.hashChapterPlan(planInput),
+        });
+        const revision = await this.chapterRevisionService.create({
+          id: randomUUID(),
+          project: { connect: { id: created.id } },
+          chapterPlan: { connect: { id: plan.id } },
+          chapterNumber: chapter.chapterNumber,
+          version: 1,
+          status: 'FINALIZED',
+          content: chapter.content,
+          wordCount: this.countWords(chapter.content),
+          promptSummary: `从《${imported.filename}》导入。`,
+          source: 'import',
+          schemaVersion: 1,
+          contentHash: createHash('sha256').update(chapter.content, 'utf8').digest('hex'),
+        });
+        await this.setCurrentDraftPointer(revision);
+        await this.chapterFinalPointerService.upsert({
+          where: {
+            projectId_chapterNumber: {
+              projectId: created.id,
+              chapterNumber: chapter.chapterNumber,
+            },
+          },
+          create: {
+            project: { connect: { id: created.id } },
+            chapterNumber: chapter.chapterNumber,
+            revision: { connect: { id: revision.id } },
+          },
+          update: { revision: { connect: { id: revision.id } } },
+        });
+        const finalization = await this.chapterFinalizationService.create({
+          project: { connect: { id: created.id } },
+          revision: { connect: { id: revision.id } },
+          chapterNumber: chapter.chapterNumber,
+          status: 'FINALIZED',
+          factSnapshotRecorded: true,
+          summaryStatus: 'COMPLETED',
+          indexStatus: 'COMPLETED',
+        });
+        const factsForSnapshot = importedFacts.filter(
+          (fact) => fact.effectiveChapter <= chapter.chapterNumber,
+        );
+        if (factsForSnapshot.length > 0) {
+          await this.finalizationFactSnapshotService.createMany(
+            factsForSnapshot.map((fact) => ({
+              finalizationId: finalization.id,
+              projectId: created.id,
+              sourceFactId: fact.id,
+              factType: fact.factType,
+              subject: fact.subject,
+              predicate: fact.predicate,
+              value: fact.value,
+              effectiveChapter: fact.effectiveChapter,
+              status: fact.status,
+              schemaVersion: fact.schemaVersion,
+            })),
+          );
+        }
+      }
+      await this.projectImportService.update(
+        { id: imported.id },
+        {
+          project: { connect: { id: created.id } },
+          status: 'IMPORTED',
+          confirmedAt: new Date(),
+          preview: {
+            chapters: parsed.chapters.map((chapter) => ({
+              chapterNumber: chapter.chapterNumber,
+              title: chapter.title,
+              characterCount: chapter.content.length,
+              excerpt: this.importExcerpt(chapter.content),
+            })),
+            factCandidates,
+            acceptedFactCandidateIds,
+          },
+        },
+      );
+      await this.auditLogService.logCreate('studio.project_import', imported.id, userId, {
+        projectId: created.id,
+        filename: imported.filename,
+        contentHash: imported.contentHash,
+        importedChapterCount: parsed.chapters.length,
+        importedFactCount: acceptedFactCandidates.length,
+      });
+      return created;
+    });
+    return {
+      importId,
+      project: this.toProjectSummary(project),
+      importedChapterCount: parsed.chapters.length,
+      importedFactCount: acceptedFactCandidates.length,
+    };
+  }
+
+  async exportProject(
+    userId: string,
+    projectId: string,
+    query: StudioProjectExportQuery,
+  ): Promise<StudioProjectExport> {
+    const project = await this.getOwnedProject(userId, projectId);
+    const [pointers, openFindings, facts] = await Promise.all([
+      this.chapterFinalPointerService.list(
+        { projectId },
+        { page: 1, limit: 500, orderBy: { chapterNumber: 'asc' } },
+        { include: { revision: true } },
+      ),
+      this.reviewFindingService.count({ projectId, severity: 'BLOCKING', status: 'OPEN' }),
+      this.factService.count({ projectId, status: 'CONFIRMED' }),
+    ]);
+    if (openFindings > 0 && (!query.force || !query.forceReason)) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: `存在 ${openFindings} 个未处理硬事实问题；强制导出必须填写理由。`,
+      });
+    }
+    const finals = (
+      await Promise.all(
+        pointers.list.map(async (pointer) => {
+          const revision = await this.chapterRevisionService.getById(pointer.revisionId);
+          return revision ? { chapterNumber: pointer.chapterNumber, revision } : null;
+        }),
+      )
+    ).filter(
+      (item): item is { chapterNumber: number; revision: StudioChapterRevision } => item !== null,
+    );
+    const metadata = [
+      `作品：${project.title}`,
+      `定稿章节：${finals.length}`,
+      `确认事实：${facts}`,
+      `未处理硬问题：${openFindings}`,
+    ];
+    const chapters = finals.map(({ chapterNumber, revision }) => ({
+      chapterNumber,
+      content: revision.content,
+    }));
+    const content =
+      query.format === 'md'
+        ? [
+            `# ${project.title}`,
+            '',
+            ...metadata.map((item) => `${item}  `),
+            '',
+            ...chapters.flatMap(({ chapterNumber, content }) => [
+              `## 第 ${chapterNumber} 章`,
+              '',
+              content,
+              '',
+            ]),
+          ].join('\n')
+        : [
+            ...metadata,
+            '',
+            ...chapters.flatMap(({ chapterNumber, content }) => [
+              `第 ${chapterNumber} 章`,
+              '',
+              content,
+              '',
+            ]),
+          ].join('\n');
+    const warnings = openFindings > 0 ? [`含 ${openFindings} 个未处理硬事实问题。`] : [];
+    await this.auditLogService.logExport('studio.project', userId, {
+      projectId,
+      format: query.format,
+      force: query.force,
+      forceReason: query.forceReason,
+      chapterCount: finals.length,
+      warnings,
+    });
+    return {
+      filename: `${this.safeExportFilename(project.title)}.${query.format}`,
+      contentType: query.format === 'md' ? 'text/markdown' : 'text/plain',
+      content,
+      warnings,
+    };
+  }
+
+  async getProjectOverview(userId: string, projectId: string): Promise<StudioProjectOverview> {
+    await this.getOwnedProject(userId, projectId);
+    const [
+      finalizedChapterCount,
+      pendingChapterPlans,
+      pendingFactChangeCount,
+      confirmedFactCount,
+      blockingFindingCount,
+      pendingFinalizationTaskCount,
+      failedFinalizationTaskCount,
+    ] = await Promise.all([
+      this.chapterFinalPointerService.count({ projectId }),
+      this.chapterPlanService.list(
+        { projectId, needsReview: true },
+        { page: 1, limit: 500, orderBy: { chapterNumber: 'asc' } },
+      ),
+      this.factChangeService.count({ projectId, status: 'PROPOSED' }),
+      this.factService.count({ projectId, status: 'CONFIRMED' }),
+      this.reviewFindingService.count({ projectId, severity: 'BLOCKING', status: 'OPEN' }),
+      this.finalizationOutboxTaskService.count({
+        projectId,
+        status: { in: ['PENDING', 'RUNNING', 'RECOVERABLE'] },
+      }),
+      this.finalizationOutboxTaskService.count({ projectId, status: 'FAILED' }),
+    ]);
+    return {
+      projectId,
+      finalizedChapterCount,
+      pendingChapterReviewNumbers: [
+        ...new Set(pendingChapterPlans.list.map((plan) => plan.chapterNumber)),
+      ],
+      pendingFactChangeCount,
+      confirmedFactCount,
+      blockingFindingCount,
+      pendingFinalizationTaskCount,
+      failedFinalizationTaskCount,
+    };
+  }
+
+  async listProjectEvents(
+    userId: string,
+    projectId: string,
+    query: StudioProjectEventListQuery,
+  ): Promise<StudioProjectEventListResponse> {
+    await this.getOwnedProject(userId, projectId);
+    const events = await this.projectEventService.list(
+      { projectId },
+      { page: query.page, limit: query.limit, orderBy: { createdAt: 'desc' } },
+    );
+    return {
+      ...events,
+      list: events.list.map(
+        (event) =>
+          ({
+            id: event.id,
+            projectId: event.projectId,
+            type: (
+              {
+                GENERATION_STATUS: 'generation_status',
+                FINALIZATION_TASK_STATUS: 'finalization_task_status',
+                FACT_CHANGE_DECISION: 'fact_change_decision',
+              } as const
+            )[event.type],
+            payload: event.payload as Record<string, unknown>,
+            createdAt: event.createdAt.toISOString(),
+          }) satisfies StudioProjectEventResponse,
+      ),
+    };
+  }
+
+  async *streamProjectEvents(
+    userId: string,
+    projectId: string,
+    signal: AbortSignal,
+    lastEventId?: string,
+  ): AsyncGenerator<{ id: string; event: string; data: string }> {
+    await this.getOwnedProject(userId, projectId);
+    const validLastEventId = lastEventId && z.string().uuid().safeParse(lastEventId).success;
+    const lastEvent = validLastEventId ? await this.projectEventService.getById(lastEventId) : null;
+    let cursor =
+      lastEvent?.projectId === projectId
+        ? { createdAt: lastEvent.createdAt, id: lastEvent.id }
+        : null;
+    while (!signal.aborted) {
+      const events = await this.projectEventService.list(
+        {
+          projectId,
+          ...(cursor
+            ? {
+                OR: [
+                  { createdAt: { gt: cursor.createdAt } },
+                  { createdAt: cursor.createdAt, id: { gt: cursor.id } },
+                ],
+              }
+            : {}),
+        },
+        { page: 1, limit: 100, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
+      );
+      for (const event of events.list) {
+        cursor = { createdAt: event.createdAt, id: event.id };
+        yield {
+          id: event.id,
+          event: 'studio-project-event',
+          data: JSON.stringify(this.toProjectEvent(event)),
+        };
+      }
+      if (events.list.length === 100) continue;
+      await this.waitForProjectEventPoll(signal);
+    }
+  }
+
+  private waitForProjectEventPoll(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 2_500);
+      signal.addEventListener('abort', finish, { once: true });
+    });
+  }
+
+  async listFinalizationTasks(
+    userId: string,
+    projectId: string,
+    query: StudioFinalizationTaskListQuery,
+  ): Promise<StudioFinalizationTaskListResponse> {
+    await this.getOwnedProject(userId, projectId);
+    const tasks = await this.finalizationOutboxTaskService.list(
+      { projectId },
+      { page: query.page, limit: query.limit, orderBy: { createdAt: 'desc' } },
+    );
+    return { ...tasks, list: tasks.list.map((task) => this.toFinalizationTask(task)) };
+  }
+
+  async retryFinalizationTask(
+    userId: string,
+    projectId: string,
+    taskId: string,
+  ): Promise<StudioFinalizationTaskResponse> {
+    await this.getOwnedProject(userId, projectId);
+    const task = await this.finalizationOutboxTaskService.getById(taskId);
+    if (!task || task.projectId !== projectId)
+      throw apiError(CommonErrorCode.NotFound, { message: '定稿后台任务不存在。' });
+    if (task.status !== 'FAILED' && task.status !== 'RECOVERABLE')
+      throw apiError(CommonErrorCode.BadRequest, { message: '该任务当前不能重试。' });
+    const updated = await this.finalizationOutboxTaskService.update(
+      { id: task.id },
+      { status: 'PENDING', lastError: null },
+    );
+    await this.chapterFinalizationService.update(
+      { id: updated.finalizationId },
+      { status: 'FINALIZING', error: null },
+    );
+    await this.projectEventService.create({
+      project: { connect: { id: projectId } },
+      type: 'FINALIZATION_TASK_STATUS',
+      payload: {
+        taskId: updated.id,
+        status: 'pending',
+        type: updated.type.toLowerCase(),
+        attemptCount: updated.attemptCount,
+      },
+    });
+    await this.auditLogService.logUpdate(
+      'studio.finalization_task',
+      updated.id,
+      userId,
+      { action: 'retry' },
+      { projectId, type: updated.type },
+    );
+    return this.toFinalizationTask(updated);
+  }
+
   async getBlueprint(userId: string, projectId: string): Promise<StudioBlueprintResponse> {
     await this.getOwnedProject(userId, projectId);
     const blueprint = await this.findLatestBlueprint(projectId);
@@ -231,6 +1021,19 @@ export class StudioService {
     }
 
     return this.toBlueprint(blueprint);
+  }
+
+  async listBlueprints(
+    userId: string,
+    projectId: string,
+    query: StudioBlueprintListQuery,
+  ): Promise<StudioBlueprintListResponse> {
+    await this.getOwnedProject(userId, projectId);
+    const blueprints = await this.blueprintService.list(
+      { projectId },
+      { page: query.page, limit: query.limit, orderBy: { version: 'desc' } },
+    );
+    return { ...blueprints, list: blueprints.list.map((blueprint) => this.toBlueprint(blueprint)) };
   }
 
   async updateBlueprint(
@@ -290,10 +1093,51 @@ export class StudioService {
         { id: projectId },
         { currentBlueprint: { connect: { id: confirmed.id } } },
       );
+      await this.auditLogService.logUpdate(
+        'studio.blueprint',
+        confirmed.id,
+        userId,
+        { status: 'confirmed' },
+        { projectId, version: confirmed.version },
+      );
       return confirmed;
     });
 
     return this.toBlueprint(blueprint);
+  }
+
+  async restoreBlueprint(
+    userId: string,
+    projectId: string,
+    blueprintId: string,
+  ): Promise<StudioBlueprintRestoreResult> {
+    await this.getOwnedProject(userId, projectId);
+    const blueprint = await this.blueprintService.getById(blueprintId);
+    if (!blueprint || blueprint.projectId !== projectId || blueprint.status !== 'CONFIRMED')
+      throw apiError(CommonErrorCode.BadRequest, { message: '只能恢复已确认的项目蓝图。' });
+    const plans = await this.chapterPlanService.list(
+      { projectId, blueprintId: { not: blueprintId } },
+      { page: 1, limit: 500, orderBy: { chapterNumber: 'asc' } },
+    );
+    const affectedChapterNumbers = [...new Set(plans.list.map((plan) => plan.chapterNumber))];
+    await this.unitOfWork.execute(async () => {
+      await this.projectService.update(
+        { id: projectId },
+        { currentBlueprint: { connect: { id: blueprintId } } },
+      );
+      await this.chapterPlanService.updateMany(
+        { projectId, blueprintId: { not: blueprintId } },
+        { needsReview: true },
+      );
+      await this.auditLogService.logUpdate(
+        'studio.blueprint',
+        blueprintId,
+        userId,
+        { action: 'restore_blueprint' },
+        { projectId, affectedChapterNumbers },
+      );
+    });
+    return { blueprint: this.toBlueprint(blueprint), affectedChapterNumbers };
   }
 
   async getChapterPlan(
@@ -330,6 +1174,7 @@ export class StudioService {
             {
               ...input,
               characters: input.characters,
+              needsReview: false,
               source: 'author',
               contentHash,
             },
@@ -340,6 +1185,7 @@ export class StudioService {
             chapterNumber,
             version: (latest?.version ?? 0) + 1,
             status: 'DRAFT',
+            needsReview: false,
             ...input,
             characters: input.characters,
             source: 'author',
@@ -363,11 +1209,11 @@ export class StudioService {
         message: '章节计划尚未创建。',
       });
     }
-    if (latest.status === 'CONFIRMED') return this.toChapterPlan(latest);
+    if (latest.status === 'CONFIRMED' && !latest.needsReview) return this.toChapterPlan(latest);
 
     const confirmed = await this.chapterPlanService.update(
       { id: latest.id },
-      { status: 'CONFIRMED' },
+      { status: 'CONFIRMED', needsReview: false },
     );
     return this.toChapterPlan(confirmed);
   }
@@ -381,7 +1227,12 @@ export class StudioService {
     const project = await this.getOwnedProject(userId, projectId);
     const blueprint = await this.getConfirmedBlueprint(project);
     const plan = await this.findLatestChapterPlan(projectId, chapterNumber);
-    if (!plan || plan.status !== 'CONFIRMED' || plan.blueprintId !== blueprint.id) {
+    if (
+      !plan ||
+      plan.status !== 'CONFIRMED' ||
+      plan.needsReview ||
+      plan.blueprintId !== blueprint.id
+    ) {
       throw apiError(CommonErrorCode.BadRequest, {
         message: '请先确认与当前蓝图一致的章节计划。',
       });
@@ -399,6 +1250,18 @@ export class StudioService {
       inputSummary: input.prompt,
       modelConfig: { provider: 'python-runtime' },
     });
+    await this.projectService.update({ id: projectId }, { updatedAt: new Date() });
+    await this.projectEventService.create({
+      project: { connect: { id: projectId } },
+      type: 'GENERATION_STATUS',
+      payload: { runId, status: 'queued', progress: 0, currentStep: 'Queued for chapter draft' },
+    });
+    await this.auditLogService.logCreate('studio.generation_run', runId, userId, {
+      action: 'create_chapter_draft',
+      projectId,
+      chapterNumber,
+      planId: plan.id,
+    });
 
     try {
       const runtimeJob = await this.runtimeClient.createChapterDraftJob(
@@ -413,7 +1276,7 @@ export class StudioService {
       const run = await this.syncRun(runId, runtimeJob);
       return this.toGenerationJob(project, run);
     } catch (error) {
-      await this.runService.update(
+      const failedRun = await this.runService.update(
         { id: runId },
         {
           status: 'FAILED',
@@ -422,6 +1285,18 @@ export class StudioService {
           error: '章节草稿服务暂时不可用，请稍后重试。',
         },
       );
+      await this.projectService.update({ id: projectId }, { updatedAt: failedRun.updatedAt });
+      await this.projectEventService.create({
+        project: { connect: { id: projectId } },
+        type: 'GENERATION_STATUS',
+        payload: {
+          runId,
+          status: 'failed',
+          progress: 100,
+          currentStep: failedRun.currentStep,
+          failureReason: failedRun.error,
+        },
+      });
       this.logger.error('Chapter draft dispatch failed', {
         projectId,
         runId,
@@ -482,6 +1357,17 @@ export class StudioService {
       throw apiError(CommonErrorCode.NotFound, { message: '章节草稿不存在。' });
     }
     await this.setCurrentDraftPointer(revision);
+    await this.auditLogService.logUpdate(
+      'studio.chapter_draft_pointer',
+      revision.id,
+      userId,
+      undefined,
+      {
+        projectId,
+        chapterNumber,
+        action: 'restore_draft',
+      },
+    );
     return this.toChapterRevision(revision);
   }
 
@@ -535,6 +1421,12 @@ export class StudioService {
         contentHash: this.hashContent(input.content),
       });
       await this.setCurrentDraftPointer(authorRevision);
+      await this.auditLogService.logCreate('studio.chapter_revision', authorRevision.id, userId, {
+        projectId,
+        chapterNumber,
+        sourceRevisionId,
+        source: 'author',
+      });
       return authorRevision;
     });
     return this.toChapterRevision(revision);
@@ -605,6 +1497,21 @@ export class StudioService {
         indexStatus: 'PENDING',
       });
       await this.applyAcceptedFactChanges(projectId, acceptedFactChanges.list);
+      const factsForSnapshot = await this.listAllConfirmedFacts(projectId);
+      await this.finalizationFactSnapshotService.createMany(
+        factsForSnapshot.map((fact) => ({
+          finalizationId: pendingFinalization.id,
+          projectId,
+          sourceFactId: fact.id,
+          factType: fact.factType,
+          subject: fact.subject,
+          predicate: fact.predicate,
+          value: fact.value,
+          effectiveChapter: fact.effectiveChapter,
+          status: fact.status,
+          schemaVersion: fact.schemaVersion,
+        })),
+      );
 
       const currentFinalPointer = await this.chapterFinalPointerService.get({
         projectId,
@@ -641,12 +1548,115 @@ export class StudioService {
           }),
         ),
       );
-      return this.chapterFinalizationService.update(
+      const finalizing = await this.chapterFinalizationService.update(
         { id: pendingFinalization.id },
-        { status: 'FINALIZED' },
+        { factSnapshotRecorded: true },
       );
+      await this.auditLogService.logUpdate(
+        'studio.chapter_finalization',
+        finalizing.id,
+        userId,
+        { status: 'finalizing' },
+        { projectId, chapterNumber, revisionId },
+      );
+      return finalizing;
     });
     return this.toChapterFinalization(finalization);
+  }
+
+  async restoreFinalChapterRevision(
+    userId: string,
+    projectId: string,
+    chapterNumber: number,
+    revisionId: string,
+  ): Promise<StudioChapterFinalRestoreResult> {
+    const revision = await this.getOwnedChapterRevision(
+      userId,
+      projectId,
+      chapterNumber,
+      revisionId,
+    );
+    const finalization = await this.chapterFinalizationService.getByRevisionId(revisionId);
+    if (!finalization || finalization.status !== 'FINALIZED')
+      throw apiError(CommonErrorCode.BadRequest, { message: '只能恢复曾成功定稿的章节版本。' });
+    const [laterPlans, snapshots] = await Promise.all([
+      this.listAllLaterChapterPlans(projectId, chapterNumber),
+      this.listAllFinalizationFactSnapshots(projectId, finalization.id),
+    ]);
+    const affectedChapterNumbers = [...new Set(laterPlans.map((plan) => plan.chapterNumber))];
+    if (!finalization.factSnapshotRecorded) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该历史定稿尚未保存事实快照，不能安全恢复。',
+      });
+    }
+    await this.unitOfWork.execute(async () => {
+      const current = await this.chapterFinalPointerService.get({ projectId, chapterNumber });
+      if (current && current.revisionId !== revisionId)
+        await this.chapterRevisionService.update(
+          { id: current.revisionId },
+          { status: 'SUPERSEDED' },
+        );
+      await this.chapterRevisionService.update({ id: revision.id }, { status: 'FINALIZED' });
+      await this.setCurrentDraftPointer(revision);
+      await this.chapterFinalPointerService.upsert({
+        where: { projectId_chapterNumber: { projectId, chapterNumber } },
+        create: {
+          project: { connect: { id: projectId } },
+          chapterNumber,
+          revision: { connect: { id: revisionId } },
+        },
+        update: { revision: { connect: { id: revisionId } } },
+      });
+      await this.chapterPlanService.updateMany(
+        { projectId, chapterNumber: { gt: chapterNumber } },
+        { needsReview: true },
+      );
+      await this.factService.updateMany({ projectId, status: 'CONFIRMED' }, { status: 'RETIRED' });
+      for (const snapshot of snapshots) {
+        const sourceFact = await this.factService.getById(snapshot.sourceFactId);
+        const data = {
+          factType: snapshot.factType,
+          subject: snapshot.subject,
+          predicate: snapshot.predicate,
+          value: snapshot.value,
+          effectiveChapter: snapshot.effectiveChapter,
+          status: 'CONFIRMED' as const,
+          schemaVersion: snapshot.schemaVersion,
+        };
+        if (sourceFact?.projectId === projectId)
+          await this.factService.update({ id: sourceFact.id }, data);
+        else await this.factService.create({ project: { connect: { id: projectId } }, ...data });
+      }
+      await this.auditLogService.logUpdate(
+        'studio.chapter_finalization',
+        revisionId,
+        userId,
+        { action: 'restore_final' },
+        { projectId, chapterNumber, affectedChapterNumbers, restoredFactCount: snapshots.length },
+      );
+    });
+    return {
+      revision: this.toChapterRevision(revision),
+      restoredFactCount: snapshots.length,
+      affectedChapterNumbers,
+    };
+  }
+
+  async listChapterFinalizations(
+    userId: string,
+    projectId: string,
+    chapterNumber: number,
+    query: StudioChapterFinalizationListQuery,
+  ): Promise<StudioChapterFinalizationListResponse> {
+    await this.getOwnedProject(userId, projectId);
+    const finalizations = await this.chapterFinalizationService.list(
+      { projectId, chapterNumber, status: 'FINALIZED' },
+      { page: query.page, limit: query.limit, orderBy: { finalizedAt: 'desc' } },
+    );
+    return {
+      ...finalizations,
+      list: finalizations.list.map((item) => this.toChapterFinalization(item)),
+    };
   }
 
   async compareChapterRevisions(
@@ -707,6 +1717,104 @@ export class StudioService {
       ...facts,
       list: facts.list.map((fact) => this.toFact(fact)),
     };
+  }
+
+  async listReviewFindings(
+    userId: string,
+    projectId: string,
+    chapterNumber: number,
+    revisionId: string,
+    query: StudioReviewFindingListQuery,
+  ): Promise<StudioReviewFindingListResponse> {
+    await this.getOwnedChapterRevision(userId, projectId, chapterNumber, revisionId);
+    const findings = await this.reviewFindingService.list(
+      { projectId, chapterNumber, revisionId },
+      { page: query.page, limit: query.limit, orderBy: { createdAt: 'desc' } },
+    );
+    return { ...findings, list: findings.list.map((finding) => this.toReviewFinding(finding)) };
+  }
+
+  async resolveReviewFinding(
+    userId: string,
+    projectId: string,
+    chapterNumber: number,
+    revisionId: string,
+    findingId: string,
+    input: ResolveStudioReviewFinding,
+  ): Promise<StudioReviewFindingResponse> {
+    await this.getOwnedChapterRevision(userId, projectId, chapterNumber, revisionId);
+    const finding = await this.reviewFindingService.getById(findingId);
+    if (
+      !finding ||
+      finding.projectId !== projectId ||
+      finding.chapterNumber !== chapterNumber ||
+      finding.revisionId !== revisionId
+    )
+      throw apiError(CommonErrorCode.NotFound, { message: '审校问题不存在。' });
+    if (finding.status !== 'OPEN')
+      throw apiError(CommonErrorCode.BadRequest, { message: '该审校问题已经处理。' });
+    const status = {
+      resolve: 'RESOLVED',
+      ignore: 'IGNORED',
+      intentional_change: 'INTENTIONAL_CHANGE',
+    } as const;
+    const resolvedAt = new Date();
+    const updatedFinding = await this.unitOfWork.execute(async () => {
+      if (input.decision === 'intentional_change') {
+        if (!finding.factId || !input.resolvedValue) {
+          throw apiError(CommonErrorCode.BadRequest, {
+            message: '记录有意变更必须关联确认事实并填写新的事实值。',
+          });
+        }
+        const fact = await this.getOwnedFact(projectId, finding.factId);
+        if (fact.value === input.resolvedValue) {
+          throw apiError(CommonErrorCode.BadRequest, {
+            message: '新的事实值必须与当前确认事实不同。',
+          });
+        }
+        await this.factChangeService.create({
+          project: { connect: { id: projectId } },
+          revision: { connect: { id: revisionId } },
+          targetFact: { connect: { id: fact.id } },
+          chapterNumber,
+          operation: 'UPDATE',
+          factType: fact.factType,
+          subject: fact.subject,
+          predicate: fact.predicate,
+          proposedValue: input.resolvedValue,
+          rationale: input.reason,
+          evidence: finding.evidence,
+          source: 'author',
+          status: 'ACCEPTED_PENDING_FINALIZATION',
+          resolvedValue: input.resolvedValue,
+          resolvedAt,
+        });
+      }
+      return this.reviewFindingService.update(
+        { id: finding.id },
+        { status: status[input.decision], resolutionReason: input.reason, resolvedAt },
+      );
+    });
+    if (input.decision === 'intentional_change') {
+      await this.projectEventService.create({
+        project: { connect: { id: projectId } },
+        type: 'FACT_CHANGE_DECISION',
+        payload: {
+          findingId: finding.id,
+          chapterNumber,
+          revisionId,
+          decision: 'intentional_change',
+        },
+      });
+    }
+    await this.auditLogService.logUpdate(
+      'studio.review_finding',
+      finding.id,
+      userId,
+      { status: status[input.decision].toLowerCase() },
+      { projectId, chapterNumber, revisionId, decision: input.decision },
+    );
+    return this.toReviewFinding(updatedFinding);
   }
 
   async createFactChange(
@@ -792,6 +1900,24 @@ export class StudioService {
         },
       );
     });
+    await this.projectEventService.create({
+      project: { connect: { id: projectId } },
+      type: 'FACT_CHANGE_DECISION',
+      payload: {
+        changeId: resolved.id,
+        chapterNumber,
+        revisionId,
+        operation: resolved.operation.toLowerCase(),
+        decision: input.decision,
+      },
+    });
+    await this.auditLogService.logUpdate(
+      'studio.fact_change',
+      resolved.id,
+      userId,
+      { status: resolved.status.toLowerCase() },
+      { projectId, chapterNumber, revisionId, decision: input.decision },
+    );
     return this.toFactChange(resolved);
   }
 
@@ -912,6 +2038,66 @@ export class StudioService {
     }
   }
 
+  private async listAllConfirmedFacts(projectId: string): Promise<StudioFact[]> {
+    const pageSize = 500;
+    const firstPage = await this.factService.list(
+      { projectId, status: 'CONFIRMED' },
+      { page: 1, limit: pageSize, orderBy: { createdAt: 'asc' } },
+    );
+    const facts = [...firstPage.list];
+    for (let page = 2; facts.length < firstPage.total; page += 1) {
+      const nextPage = await this.factService.list(
+        { projectId, status: 'CONFIRMED' },
+        { page, limit: pageSize, orderBy: { createdAt: 'asc' } },
+      );
+      if (nextPage.list.length === 0) break;
+      facts.push(...nextPage.list);
+    }
+    return facts;
+  }
+
+  private async listAllLaterChapterPlans(
+    projectId: string,
+    chapterNumber: number,
+  ): Promise<StudioChapterPlan[]> {
+    const pageSize = 500;
+    const firstPage = await this.chapterPlanService.list(
+      { projectId, chapterNumber: { gt: chapterNumber } },
+      { page: 1, limit: pageSize, orderBy: { chapterNumber: 'asc' } },
+    );
+    const plans = [...firstPage.list];
+    for (let page = 2; plans.length < firstPage.total; page += 1) {
+      const nextPage = await this.chapterPlanService.list(
+        { projectId, chapterNumber: { gt: chapterNumber } },
+        { page, limit: pageSize, orderBy: { chapterNumber: 'asc' } },
+      );
+      if (nextPage.list.length === 0) break;
+      plans.push(...nextPage.list);
+    }
+    return plans;
+  }
+
+  private async listAllFinalizationFactSnapshots(
+    projectId: string,
+    finalizationId: string,
+  ): Promise<StudioFinalizationFactSnapshot[]> {
+    const pageSize = 500;
+    const firstPage = await this.finalizationFactSnapshotService.list(
+      { projectId, finalizationId },
+      { page: 1, limit: pageSize, orderBy: { createdAt: 'asc' } },
+    );
+    const snapshots = [...firstPage.list];
+    for (let page = 2; snapshots.length < firstPage.total; page += 1) {
+      const nextPage = await this.finalizationFactSnapshotService.list(
+        { projectId, finalizationId },
+        { page, limit: pageSize, orderBy: { createdAt: 'asc' } },
+      );
+      if (nextPage.list.length === 0) break;
+      snapshots.push(...nextPage.list);
+    }
+    return snapshots;
+  }
+
   private async ensureNoBlockingReviewFindings(
     projectId: string,
     revision: StudioChapterRevision,
@@ -991,16 +2177,19 @@ export class StudioService {
   }
 
   private async syncRun(runId: string, runtimeJob: GenerationJob): Promise<StudioGenerationRun> {
+    const previous = await this.runService.getById(runId);
     const run = await this.runService.update(
       { id: runId },
       {
         status: dbStatusMap[runtimeJob.status],
         progress: runtimeJob.progress,
         currentStep: runtimeJob.currentStep,
-        architecture: runtimeJob.artifact?.architecture ?? null,
-        outline: runtimeJob.artifact?.outline ?? null,
-        chapterContent: runtimeJob.artifact?.chapterDraft ?? null,
-        factChanges: JSON.parse(JSON.stringify(runtimeJob.artifact?.factChanges ?? [])),
+        architecture: runtimeJob.artifact?.architecture ?? previous?.architecture ?? null,
+        outline: runtimeJob.artifact?.outline ?? previous?.outline ?? null,
+        chapterContent: runtimeJob.artifact?.chapterDraft ?? previous?.chapterContent ?? null,
+        factChanges: JSON.parse(
+          JSON.stringify(runtimeJob.artifact?.factChanges ?? previous?.factChanges ?? []),
+        ),
         ...(runtimeJob.modelConfig
           ? { modelConfig: JSON.parse(JSON.stringify(runtimeJob.modelConfig)) }
           : {}),
@@ -1008,6 +2197,26 @@ export class StudioService {
         error: runtimeJob.error ?? null,
       },
     );
+    if (
+      !previous ||
+      previous.status !== run.status ||
+      previous.progress !== run.progress ||
+      previous.currentStep !== run.currentStep
+    ) {
+      await this.projectService.update({ id: run.projectId }, { updatedAt: run.updatedAt });
+      await this.projectEventService.create({
+        project: { connect: { id: run.projectId } },
+        type: 'GENERATION_STATUS',
+        payload: {
+          runId: run.id,
+          status: runStatusMap[run.status],
+          progress: run.progress,
+          currentStep: run.currentStep,
+          elapsedMs: Date.now() - run.createdAt.getTime(),
+          ...(run.error ? { failureReason: run.error } : {}),
+        },
+      });
+    }
     if (run.status === 'SUCCEEDED' && run.type === 'BLUEPRINT' && run.architecture) {
       await this.createBlueprintFromRun(run);
     }
@@ -1131,6 +2340,139 @@ export class StudioService {
 
   private hashBlueprint(architecture: string, outline: string): string {
     return createHash('sha256').update(`${architecture}\n\n${outline}`, 'utf8').digest('hex');
+  }
+
+  private async parseImportedManuscript(input: PreviewStudioProjectImport): Promise<{
+    sourceFormat: 'txt' | 'md' | 'docx';
+    contentHash: string;
+    chapters: ImportedChapter[];
+  }> {
+    const sourceFormat = input.format ?? this.importSourceFormat(input.filename);
+    let content: string;
+    try {
+      const rawBytes = Buffer.from(input.contentBase64, 'base64');
+      content =
+        sourceFormat === 'docx'
+          ? (await mammoth.extractRawText({ buffer: rawBytes })).value
+          : new TextDecoder('utf-8', { fatal: true }).decode(rawBytes);
+      content = content.replace(/^\uFEFF/u, '').replace(/\r\n?/gu, '\n');
+    } catch {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '存稿必须是 UTF-8 编码的 TXT/Markdown 或有效 DOCX 文件。',
+      });
+    }
+    if (!content.trim()) {
+      throw apiError(CommonErrorCode.BadRequest, { message: '存稿内容不能为空。' });
+    }
+    const matches = Array.from(
+      content.matchAll(
+        /^(?:#{1,6}\s+)?(?:第\s*(?:\d+|[一二三四五六七八九十百千]+)\s*章.*|chapter\s*\d+.*)$/gimu,
+      ),
+    );
+    const chapters =
+      matches.length === 0
+        ? [{ chapterNumber: 1, title: this.importTitle(input.filename), content: content.trim() }]
+        : matches.map((match, index) => {
+            const heading = match[0].replace(/^#{1,6}\s*/u, '').trim();
+            const start = (match.index ?? 0) + match[0].length;
+            const end = matches[index + 1]?.index ?? content.length;
+            return {
+              chapterNumber: index + 1,
+              title: heading.slice(0, 200) || `第 ${index + 1} 章`,
+              content: content.slice(start, end).trim() || heading,
+            };
+          });
+    if (chapters.length > 500) {
+      throw apiError(CommonErrorCode.BadRequest, { message: '单次导入最多支持 500 章。' });
+    }
+    return {
+      sourceFormat,
+      contentHash: createHash('sha256')
+        .update(Buffer.from(input.contentBase64, 'base64'))
+        .digest('hex'),
+      chapters,
+    };
+  }
+
+  private importTitle(filename: string): string {
+    return (
+      filename
+        .replace(/\.(txt|md|docx)$/iu, '')
+        .trim()
+        .slice(0, 200) || '导入正文'
+    );
+  }
+
+  private importSourceFormat(filename: string): 'txt' | 'md' | 'docx' {
+    const extension = filename.toLowerCase().split('.').at(-1);
+    return extension === 'docx' ? 'docx' : extension === 'md' ? 'md' : 'txt';
+  }
+
+  private importExcerpt(content: string): string {
+    return content.replace(/\s+/gu, ' ').trim().slice(0, 160);
+  }
+
+  private importFactCandidates(chapters: ImportedChapter[]): StudioProjectImportFactCandidate[] {
+    const candidates: StudioProjectImportFactCandidate[] = [];
+    const seen = new Set<string>();
+    const patterns: Array<{
+      expression: RegExp;
+      factType: string;
+      predicate: string;
+      confidence: number;
+    }> = [
+      {
+        expression:
+          /(?<subject>[\u4E00-\u9FFF]{2,12})(?:是|为|叫|名为)(?<value>[^，。！？\n]{2,80})/gu,
+        factType: 'character',
+        predicate: 'description',
+        confidence: 0.45,
+      },
+      {
+        expression:
+          /(?<subject>[\u4E00-\u9FFF]{2,12})(?:来自|出生于)(?<value>[^，。！？\n]{2,80})/gu,
+        factType: 'character',
+        predicate: 'origin',
+        confidence: 0.4,
+      },
+      {
+        expression:
+          /(?<subject>[\u4E00-\u9FFF]{2,12})(?:住在|居住在|位于)(?<value>[^，。！？\n]{2,80})/gu,
+        factType: 'world',
+        predicate: 'location',
+        confidence: 0.4,
+      },
+    ];
+    for (const chapter of chapters) {
+      for (const pattern of patterns) {
+        for (const match of chapter.content.matchAll(pattern.expression)) {
+          const subject = match.groups?.subject?.trim();
+          const value = match.groups?.value?.trim();
+          if (!subject || !value) continue;
+          const evidence = match[0].trim();
+          const key = `${chapter.chapterNumber}:${pattern.factType}:${subject}:${pattern.predicate}:${value}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          candidates.push({
+            id: this.hashContent(`${key}:${evidence}`),
+            chapterNumber: chapter.chapterNumber,
+            factType: pattern.factType,
+            subject,
+            predicate: pattern.predicate,
+            value,
+            evidence: evidence.slice(0, 500),
+            confidence: pattern.confidence,
+          });
+          if (candidates.length >= 200) return candidates;
+        }
+      }
+    }
+    return candidates;
+  }
+
+  private importedFactCount(preview: unknown): number {
+    const parsed = StudioProjectImportPreviewDataSchema.safeParse(preview);
+    return parsed.success ? parsed.data.acceptedFactCandidateIds.length : 0;
   }
 
   private async findLatestChapterPlan(
@@ -1290,6 +2632,10 @@ export class StudioService {
     };
   }
 
+  private safeExportFilename(title: string): string {
+    return title.replace(/[\\/:*?"<>|]/g, '_').trim() || 'hanlin-project';
+  }
+
   private toGenerationJob(project: StudioProject, run: StudioGenerationRun): GenerationJob {
     const artifact = {
       ...(run.architecture ? { architecture: run.architecture } : {}),
@@ -1322,6 +2668,56 @@ export class StudioService {
     };
   }
 
+  private toProjectSummary(project: StudioProject): StudioProjectImportResult['project'] {
+    return {
+      id: project.id,
+      title: project.title,
+      format: project.format as StudioProjectImportResult['project']['format'],
+      genre: project.genre,
+      chapterCount: project.chapterCount,
+      targetWordsPerChapter: project.targetWordsPerChapter,
+    };
+  }
+
+  private toAdaptation(
+    adaptation: StudioAdaptationProject,
+    snapshot: StudioAdaptationSourceSnapshot,
+  ): StudioAdaptationProjectResponse {
+    const targetFormat = {
+      SERIES: 'series',
+      SHORT_DRAMA: 'short_drama',
+    } as const;
+    const status = {
+      BRIEF_DRAFT: 'brief_draft',
+      BLUEPRINT_REVIEW: 'blueprint_review',
+      SCENE_PLANNING: 'scene_planning',
+      SCRIPT_WRITING: 'script_writing',
+      REVIEW_READY: 'review_ready',
+      DELIVERABLE: 'deliverable',
+    } as const;
+    return {
+      id: adaptation.id,
+      sourceProjectId: adaptation.sourceProjectId,
+      targetFormat: targetFormat[adaptation.targetFormat],
+      episodeCount: adaptation.episodeCount,
+      minutesPerEpisode: adaptation.minutesPerEpisode,
+      targetAudience: adaptation.targetAudience,
+      adaptationGoal: adaptation.adaptationGoal,
+      mustPreserve: adaptation.mustPreserve,
+      status: status[adaptation.status],
+      sourceSnapshot: {
+        id: snapshot.id,
+        sourceProjectId: snapshot.sourceProjectId,
+        sourceProjectTitle: snapshot.sourceProjectTitle,
+        sourceProjectUpdatedAt: snapshot.sourceProjectUpdatedAt.toISOString(),
+        sourceChapterCount: snapshot.sourceChapterCount,
+        createdAt: snapshot.createdAt.toISOString(),
+      },
+      createdAt: adaptation.createdAt.toISOString(),
+      updatedAt: adaptation.updatedAt.toISOString(),
+    };
+  }
+
   private toProjectListItem(
     project: ProjectWithLatestRun,
   ): StudioProjectListResponse['list'][number] {
@@ -1336,6 +2732,9 @@ export class StudioService {
       targetWordsPerChapter: project.targetWordsPerChapter,
       createdAt: project.createdAt.toISOString(),
       updatedAt: project.updatedAt.toISOString(),
+      finalizedChapterCount: project.chapterFinalPointers.length,
+      confirmedFactCount: project.facts.length,
+      blockingFindingCount: project.reviewFindings.length,
       ...(latestRun
         ? {
             latestRun: {
@@ -1374,6 +2773,7 @@ export class StudioService {
       chapterNumber: plan.chapterNumber,
       version: plan.version,
       status: chapterPlanStatusMap[plan.status],
+      needsReview: plan.needsReview,
       title: plan.title,
       goal: plan.goal,
       conflict: plan.conflict,
@@ -1444,7 +2844,7 @@ export class StudioService {
       projectId: finalization.projectId,
       revisionId: finalization.revisionId,
       chapterNumber: finalization.chapterNumber,
-      status: 'finalized',
+      status: finalization.status.toLowerCase() as StudioChapterFinalizationResponse['status'],
       summaryStatus:
         finalization.summaryStatus.toLowerCase() as StudioChapterFinalizationResponse['summaryStatus'],
       indexStatus:
@@ -1452,6 +2852,24 @@ export class StudioService {
       finalizedAt: finalization.finalizedAt.toISOString(),
       createdAt: finalization.createdAt.toISOString(),
       updatedAt: finalization.updatedAt.toISOString(),
+    };
+  }
+
+  private toProjectEvent(
+    event: import('@prisma/client').StudioProjectEvent,
+  ): StudioProjectEventResponse {
+    return {
+      id: event.id,
+      projectId: event.projectId,
+      type: (
+        {
+          GENERATION_STATUS: 'generation_status',
+          FINALIZATION_TASK_STATUS: 'finalization_task_status',
+          FACT_CHANGE_DECISION: 'fact_change_decision',
+        } as const
+      )[event.type],
+      payload: event.payload as Record<string, unknown>,
+      createdAt: event.createdAt.toISOString(),
     };
   }
 
@@ -1467,6 +2885,44 @@ export class StudioService {
       status: 'confirmed',
       createdAt: fact.createdAt.toISOString(),
       updatedAt: fact.updatedAt.toISOString(),
+    };
+  }
+
+  private toReviewFinding(finding: StudioReviewFinding): StudioReviewFindingResponse {
+    return {
+      id: finding.id,
+      projectId: finding.projectId,
+      revisionId: finding.revisionId,
+      chapterNumber: finding.chapterNumber,
+      ...(finding.factId ? { factId: finding.factId } : {}),
+      ruleId: finding.ruleId,
+      severity: finding.severity.toLowerCase() as StudioReviewFindingResponse['severity'],
+      status: finding.status.toLowerCase() as StudioReviewFindingResponse['status'],
+      evidenceStart: finding.evidenceStart,
+      evidenceEnd: finding.evidenceEnd,
+      evidence: finding.evidence,
+      suggestedAction: finding.suggestedAction,
+      ...(finding.resolutionReason ? { resolutionReason: finding.resolutionReason } : {}),
+      ...(finding.resolvedAt ? { resolvedAt: finding.resolvedAt.toISOString() } : {}),
+      createdAt: finding.createdAt.toISOString(),
+      updatedAt: finding.updatedAt.toISOString(),
+    };
+  }
+
+  private toFinalizationTask(
+    task: import('@prisma/client').StudioFinalizationOutboxTask,
+  ): StudioFinalizationTaskResponse {
+    return {
+      id: task.id,
+      projectId: task.projectId,
+      revisionId: task.revisionId,
+      chapterNumber: task.chapterNumber,
+      type: task.type.toLowerCase() as StudioFinalizationTaskResponse['type'],
+      status: task.status.toLowerCase() as StudioFinalizationTaskResponse['status'],
+      attemptCount: task.attemptCount,
+      ...(task.lastError ? { lastError: task.lastError } : {}),
+      createdAt: task.createdAt.toISOString(),
+      updatedAt: task.updatedAt.toISOString(),
     };
   }
 }

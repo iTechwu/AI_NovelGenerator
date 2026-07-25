@@ -29,7 +29,7 @@ def utc_now() -> datetime:
 class ProjectInput(BaseModel):
     id: UUID
     title: str = Field(min_length=1, max_length=120)
-    format: Literal['novel', 'screenplay'] = 'novel'
+    format: Literal['novel'] = 'novel'
     genre: str = Field(min_length=1, max_length=80)
     premise: str = Field(min_length=20, max_length=4000)
     chapterCount: int = Field(ge=1, le=500)
@@ -86,7 +86,7 @@ class GenerationJob(BaseModel):
     chapterPlan: ChapterPlanInput | None = None
     prompt: str = ''
     modelConfig: dict[str, str] = Field(default_factory=dict)
-    status: Literal['queued', 'running', 'succeeded', 'failed']
+    status: Literal['queued', 'running', 'succeeded', 'failed', 'cancelled']
     progress: int = Field(ge=0, le=100)
     currentStep: str
     attemptCount: int = Field(default=0, ge=0)
@@ -227,22 +227,28 @@ async def run_job(job_id: UUID) -> None:
                 job.id,
                 lambda progress, step: update_job(job, progress, step),
             )
-        job.status = 'succeeded'
-        job.progress = 100
-        job.currentStep = 'Generation complete'
-        job.artifact = artifact
+        if job.status != 'cancelled':
+            job.status = 'succeeded'
+            job.progress = 100
+            job.currentStep = 'Generation complete'
+            job.artifact = artifact
     except Exception:  # Details stay in the service log, never in the browser response.
-        logger.exception('Generation job failed', extra={'job_id': str(job.id)})
-        job.status = 'failed'
-        job.progress = 100
-        job.currentStep = 'Generation failed'
-        job.error = 'The generation service could not complete this request.'
+        if job.status == 'cancelled':
+            logger.info('Generation job stopped after cancellation', extra={'job_id': str(job.id)})
+        else:
+            logger.exception('Generation job failed', extra={'job_id': str(job.id)})
+            job.status = 'failed'
+            job.progress = 100
+            job.currentStep = 'Generation failed'
+            job.error = 'The generation service could not complete this request.'
     finally:
         job.updatedAt = utc_now()
         checkpoint_job(job)
 
 
 def update_job(job: GenerationJob, progress: int, step: str) -> None:
+    if job.status == 'cancelled':
+        return
     job.progress = progress
     job.currentStep = step
     job.updatedAt = utc_now()
@@ -362,7 +368,7 @@ async def retry_generation_job(
     job = jobs.get(job_id) or load_job_from_checkpoint(job_id)
     if not job or job.ownerId != owner_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Generation job not found')
-    if job.status not in {'failed', 'queued'}:
+    if job.status not in {'failed', 'queued', 'cancelled'}:
         return job
     jobs[job.id] = job
     job.status = 'queued'
@@ -372,4 +378,23 @@ async def retry_generation_job(
     job.updatedAt = utc_now()
     checkpoint_job(job)
     asyncio.create_task(run_job(job.id))
+    return job
+
+
+@app.post('/v1/generation-jobs/{job_id}/cancel', response_model=GenerationJob, status_code=status.HTTP_202_ACCEPTED)
+async def cancel_generation_job(
+    job_id: UUID,
+    owner_id: UUID,
+    _: None = Depends(require_internal_access),
+) -> GenerationJob:
+    job = jobs.get(job_id) or load_job_from_checkpoint(job_id)
+    if not job or job.ownerId != owner_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Generation job not found')
+    if job.status in {'succeeded', 'failed', 'cancelled'}:
+        return job
+    jobs[job.id] = job
+    job.status = 'cancelled'
+    job.currentStep = 'Cancellation requested'
+    job.updatedAt = utc_now()
+    checkpoint_job(job)
     return job

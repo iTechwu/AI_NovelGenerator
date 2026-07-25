@@ -112,6 +112,16 @@ export class NovelRuntimeClient {
     );
   }
 
+  async cancelJob(ownerId: string, jobId: string): Promise<GenerationJob> {
+    return this.request(
+      'post',
+      `/v1/generation-jobs/${jobId}/cancel`,
+      undefined,
+      GenerationJobSchema,
+      { owner_id: ownerId },
+    );
+  }
+
   async executeFinalizationTask(input: z.input<typeof InternalFinalizationTaskSchema>) {
     const body = InternalFinalizationTaskSchema.parse(input);
     return this.request('post', '/v1/finalization-tasks', body, InternalFinalizationTaskResultSchema);

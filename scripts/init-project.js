@@ -188,7 +188,7 @@ async function main() {
       `  3. ${colors.cyan}pnpm db:migrate:dev${colors.reset}   - Run database migrations`,
     );
     console.log(
-      `  4. ${colors.cyan}pnpm dev${colors.reset}              - Start development servers`,
+      `  4. ${colors.cyan}pnpm start${colors.reset}            - Start application services`,
     );
     console.log('');
   } catch (error) {

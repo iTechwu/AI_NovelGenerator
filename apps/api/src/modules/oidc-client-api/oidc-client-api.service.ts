@@ -79,7 +79,7 @@ export class OidcClientApiService implements OnModuleInit {
 
     const isDev = this.configService.get<string>('NODE_ENV', 'dev') === 'dev';
     if (isDev) {
-      const port = this.configService.get<number>('app.port', 13100);
+      const port = this.configService.get<number>('app.port', 3108);
       return `http://127.0.0.1:${port}`;
     }
 

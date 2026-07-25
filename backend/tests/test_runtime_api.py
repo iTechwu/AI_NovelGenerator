@@ -341,3 +341,96 @@ def test_fact_change_parser_keeps_only_complete_add_proposals() -> None:
         'evidence': '她握紧信件。',
         'confidence': 0.84,
     }]
+
+
+def test_cancelled_runtime_job_is_checkpointed_and_not_rescheduled_after_restart(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    api.jobs.clear()
+    monkeypatch.setattr(api.engine, '_settings', RuntimeSettings(
+        storage_root=tmp_path,
+        shared_secret='test-runtime-secret',
+        api_key='test-key',
+        base_url='https://example.test/v1',
+        model='test-model',
+        interface_format='OpenAI',
+        temperature=0.7,
+        max_tokens=100,
+        timeout_seconds=10,
+    ))
+    now = api.utc_now()
+    running = api.GenerationJob(
+        id=RUN_ID,
+        ownerId=OWNER_ID,
+        project=api.ProjectSummary(**make_request().project.model_dump()),
+        status='running',
+        progress=65,
+        currentStep='Generating story architecture',
+        createdAt=now,
+        updatedAt=now,
+    )
+    api.jobs[running.id] = running
+
+    cancelled = asyncio.run(api.cancel_generation_job(UUID(RUN_ID), UUID(OWNER_ID), None))
+    assert cancelled.status == 'cancelled'
+    assert cancelled.currentStep == 'Cancellation requested'
+
+    api.jobs.clear()
+    scheduled: list[UUID] = []
+
+    def record_task(coroutine):
+        scheduled.append(coroutine.cr_frame.f_locals['job_id'])
+        coroutine.close()
+
+    monkeypatch.setattr(api.asyncio, 'create_task', record_task)
+    asyncio.run(api.restore_jobs())
+
+    assert api.jobs[UUID(RUN_ID)].status == 'cancelled'
+    assert scheduled == []
+
+
+def test_cancelled_runtime_job_stays_cancelled_when_the_worker_raises(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    api.jobs.clear()
+    monkeypatch.setattr(api.engine, '_settings', RuntimeSettings(
+        storage_root=tmp_path,
+        shared_secret='test-runtime-secret',
+        api_key='test-key',
+        base_url='https://example.test/v1',
+        model='test-model',
+        interface_format='OpenAI',
+        temperature=0.7,
+        max_tokens=100,
+        timeout_seconds=10,
+    ))
+    now = api.utc_now()
+    job = api.GenerationJob(
+        id=RUN_ID,
+        ownerId=OWNER_ID,
+        project=api.ProjectSummary(**make_request().project.model_dump()),
+        status='queued',
+        progress=0,
+        currentStep='Queued for generation',
+        createdAt=now,
+        updatedAt=now,
+    )
+    api.jobs[job.id] = job
+
+    def cancel_then_fail(project, run_id, report):
+        del project, run_id, report
+        job.status = 'cancelled'
+        job.currentStep = 'Cancellation requested'
+        raise RuntimeError('worker stopped after cancellation')
+
+    monkeypatch.setattr(api.engine, 'generate', cancel_then_fail)
+
+    asyncio.run(api.run_job(job.id))
+
+    assert job.status == 'cancelled'
+    assert job.currentStep == 'Cancellation requested'
+    assert job.error is None
+    checkpoint = tmp_path / PROJECT_ID / 'checkpoints' / RUN_ID / 'status.json'
+    assert json.loads(checkpoint.read_text(encoding='utf-8'))['status'] == 'cancelled'

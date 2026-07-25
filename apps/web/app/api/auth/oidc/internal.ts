@@ -1,4 +1,4 @@
-const DEFAULT_API_BASE_URL = 'http://localhost:13100';
+const DEFAULT_API_BASE_URL = 'http://localhost:3108';
 
 export function getOidcApiBaseUrl(): string {
   return (

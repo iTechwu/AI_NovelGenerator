@@ -10,7 +10,10 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   return (
-    <SidebarProvider defaultOpen={true}>
+    <SidebarProvider
+      defaultOpen={true}
+      style={{ '--sidebar-width': '20rem' } as React.CSSProperties}
+    >
       <div className="flex h-screen flex-col w-full">
         {/* Full-width navbar at top */}
         <AppNavbar />

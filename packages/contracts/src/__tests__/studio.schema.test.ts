@@ -1,7 +1,10 @@
 import {
   CreateStudioAuthorRevisionSchema,
   CreateStudioProjectSchema,
+  CreateStudioAdaptationSchema,
   GenerationJobSchema,
+  ResolveStudioReviewFindingSchema,
+  StudioProjectExportQuerySchema,
 } from '../schemas/studio.schema';
 
 describe('studio schemas', () => {
@@ -18,6 +21,14 @@ describe('studio schemas', () => {
       targetWordsPerChapter: 3000,
       generateOutline: true,
     });
+    expect(
+      CreateStudioProjectSchema.safeParse({
+        title: '雾港来信',
+        format: 'screenplay',
+        genre: '悬疑',
+        premise: '一名失踪多年的记者寄回一封信，迫使女儿回到封锁的港口查明真相。',
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a completed runtime job returned through NestJS', () => {
@@ -42,6 +53,24 @@ describe('studio schemas', () => {
     ).toBe('succeeded');
   });
 
+  it('requires explicit source-right confirmation before starting an adaptation', () => {
+    expect(
+      CreateStudioAdaptationSchema.safeParse({
+        targetFormat: 'short_drama',
+        episodeCount: 60,
+        minutesPerEpisode: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      CreateStudioAdaptationSchema.parse({
+        targetFormat: 'short_drama',
+        episodeCount: 60,
+        minutesPerEpisode: 2,
+        rightsConfirmed: true,
+      }),
+    ).toMatchObject({ targetFormat: 'short_drama', rightsConfirmed: true });
+  });
+
   it('preserves author revision content while rejecting whitespace-only text', () => {
     expect(
       CreateStudioAuthorRevisionSchema.parse({
@@ -53,5 +82,27 @@ describe('studio schemas', () => {
       editSummary: '补充开场氛围。',
     });
     expect(CreateStudioAuthorRevisionSchema.safeParse({ content: ' \n ' }).success).toBe(false);
+  });
+
+  it('parses only explicit export force values from HTTP query strings', () => {
+    expect(StudioProjectExportQuerySchema.parse({ force: 'false' }).force).toBe(false);
+    expect(StudioProjectExportQuerySchema.parse({ force: 'true' }).force).toBe(true);
+    expect(StudioProjectExportQuerySchema.safeParse({ force: '1' }).success).toBe(false);
+  });
+
+  it('requires a replacement fact value for intentional hard-fact changes', () => {
+    expect(
+      ResolveStudioReviewFindingSchema.safeParse({
+        decision: 'intentional_change',
+        reason: '角色职业在本章发生变化。',
+      }).success,
+    ).toBe(false);
+    expect(
+      ResolveStudioReviewFindingSchema.safeParse({
+        decision: 'intentional_change',
+        reason: '角色职业在本章发生变化。',
+        resolvedValue: '记者',
+      }).success,
+    ).toBe(true);
   });
 });

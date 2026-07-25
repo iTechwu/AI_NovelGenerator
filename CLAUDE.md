@@ -18,7 +18,10 @@ This is a full-stack monorepo built with pnpm workspaces + Turborepo, containing
 # Install dependencies
 pnpm install
 
-# Development (all apps)
+# Start local application services (Python Runtime, API, and Web)
+pnpm start
+
+# Development (Web and API hot reload only)
 pnpm dev
 
 # Development (specific apps)

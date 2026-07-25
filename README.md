@@ -7,7 +7,7 @@
 DofeAI 是一个面向团队的**多智能体驱动内容创作与运营平台**。本仓库是其**生产级全栈 monorepo 脚手架模板** — 开箱即用的前端、后端、共享包和基础设施集成，5 分钟即可启动新项目。
 
 ```
-npx create-dofe-ai my-app && cd my-app && pnpm install && pnpm dev
+npx create-dofe-ai my-app && cd my-app && pnpm install && pnpm start
 ```
 
 ## 目录
@@ -140,8 +140,8 @@ pnpm install
 # 3. 生成 Prisma Client
 pnpm db:generate
 
-# 4. 启动开发服务
-pnpm dev
+# 4. 一键启动应用服务
+pnpm start
 ```
 
 **交互式初始化**（可选，配置项目名、数据库、Redis、RabbitMQ、Web API URL、SSO Base URL 等）：
@@ -494,7 +494,8 @@ main.ts 启动流程:
 
 ```bash
 # 开发
-pnpm dev                # 启动所有应用
+pnpm start              # 一键启动本地应用服务（Python Runtime、API、Web）
+pnpm dev                # 仅启动 Node.js 应用的本地热更新（Web、API）
 pnpm dev:web            # 仅前端
 pnpm dev:api            # 仅后端
 
@@ -524,6 +525,8 @@ pnpm clean              # 清理构建产物
 pnpm run export-scaffold    # 导出模板到 packages/create-dofe-ai/template/
 pnpm run create-scaffold    # 基于模板创建新项目
 ```
+
+`pnpm start` 不会启动 Docker 容器。它会连接已在本机 `127.0.0.1` 上运行的 PostgreSQL（5432）、Redis（6379）和 RabbitMQ（5672）；通过环境变量可覆盖默认连接配置。
 
 ---
 
@@ -580,8 +583,8 @@ npm publish
 # 仅启动基础设施
 docker compose up -d postgres redis rabbitmq
 
-# 启动全部服务
-docker compose up -d
+# 直接启动本地应用服务（不启动 Docker 容器）
+pnpm start
 
 # 重新构建 API
 docker compose up -d --build api

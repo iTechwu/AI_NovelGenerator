@@ -1,11 +1,11 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import type { Logger } from 'winston';
 import {
   StudioChapterFinalizationService,
   StudioChapterRevisionService,
   StudioFinalizationOutboxTaskService,
+  StudioProjectEventService,
 } from '@app/db';
 import type { StudioFinalizationOutboxTask } from '@prisma/client';
 import { NovelRuntimeClient } from '../../clients/novel-runtime/novel-runtime.client';
@@ -18,17 +18,24 @@ export class StudioFinalizationTaskWorker {
     private readonly taskService: StudioFinalizationOutboxTaskService,
     private readonly finalizationService: StudioChapterFinalizationService,
     private readonly revisionService: StudioChapterRevisionService,
+    private readonly projectEventService: StudioProjectEventService,
     private readonly runtimeClient: NovelRuntimeClient,
     @Inject(WINSTON_MODULE_PROVIDER) private readonly logger: Logger,
   ) {}
 
-  @Cron(CronExpression.EVERY_MINUTE)
   async processPendingTasks(): Promise<void> {
-    const { list } = await this.taskService.list(
-      { status: { in: ['PENDING', 'RECOVERABLE'] } },
-      { page: 1, limit: 20, orderBy: { createdAt: 'asc' } },
-    );
-    for (const task of list) await this.processTask(task.id);
+    const batchSize = 20;
+    const tasks: StudioFinalizationOutboxTask[] = [];
+    for (let page = 1; ; page += 1) {
+      const result = await this.taskService.list(
+        { status: { in: ['PENDING', 'RECOVERABLE'] } },
+        { page, limit: batchSize, orderBy: { createdAt: 'asc' } },
+      );
+      tasks.push(...result.list);
+      if (result.list.length < batchSize || tasks.length >= result.total) break;
+    }
+
+    for (const task of tasks) await this.processTask(task.id);
   }
 
   async processTask(taskId: string): Promise<void> {
@@ -72,12 +79,33 @@ export class StudioFinalizationTaskWorker {
         lastError: null,
       },
     );
+    await this.projectEventService.create({
+      project: { connect: { id: task.projectId } },
+      type: 'FINALIZATION_TASK_STATUS',
+      payload: {
+        taskId: task.id,
+        status: 'completed',
+        type: task.type.toLowerCase(),
+        attemptCount: task.attemptCount + 1,
+        elapsedMs: Date.now() - task.createdAt.getTime(),
+      },
+    });
     await this.finalizationService.update(
       { id: task.finalizationId },
       task.type === 'SUMMARY'
         ? { summaryStatus: 'COMPLETED', summary: result.summary ?? null }
         : { indexStatus: 'COMPLETED' },
     );
+    const completedTaskCount = await this.taskService.count({
+      finalizationId: task.finalizationId,
+      status: 'COMPLETED',
+    });
+    if (completedTaskCount >= 2) {
+      await this.finalizationService.update(
+        { id: task.finalizationId },
+        { status: 'FINALIZED', error: null },
+      );
+    }
   }
 
   private async failTask(task: StudioFinalizationOutboxTask, error: unknown): Promise<void> {
@@ -90,9 +118,31 @@ export class StudioFinalizationTaskWorker {
         lastError: message.slice(0, 4_000),
       },
     );
+    await this.projectEventService.create({
+      project: { connect: { id: task.projectId } },
+      type: 'FINALIZATION_TASK_STATUS',
+      payload: {
+        taskId: task.id,
+        status: recoverable ? 'recoverable' : 'failed',
+        type: task.type.toLowerCase(),
+        attemptCount: task.attemptCount,
+        elapsedMs: Date.now() - task.createdAt.getTime(),
+        failureReason: message.slice(0, 4_000),
+      },
+    });
     await this.finalizationService.update(
       { id: task.finalizationId },
-      task.type === 'SUMMARY' ? { summaryStatus: 'FAILED' } : { indexStatus: 'FAILED' },
+      task.type === 'SUMMARY'
+        ? {
+            status: recoverable ? 'RECOVERABLE' : 'FAILED',
+            summaryStatus: 'FAILED',
+            error: message.slice(0, 4_000),
+          }
+        : {
+            status: recoverable ? 'RECOVERABLE' : 'FAILED',
+            indexStatus: 'FAILED',
+            error: message.slice(0, 4_000),
+          },
     );
     this.logger.error('Studio finalization outbox task failed', {
       taskId: task.id,

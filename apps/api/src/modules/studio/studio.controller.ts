@@ -1,12 +1,34 @@
-import { Controller, Req } from '@nestjs/common';
+import { Controller, Get, Headers, Req, Res } from '@nestjs/common';
 import { TsRestHandler, tsRestHandler } from '@ts-rest/nest';
 import { studioContract as c } from '@repo/contracts';
 import type { AuthenticatedRequest } from '@app/auth';
 import { StudioService } from './studio.service';
+import { StudioProjectEventStreamParamsSchema } from '@repo/contracts';
+import type { FastifyReply } from 'fastify';
 
 @Controller()
 export class StudioController {
   constructor(private readonly studioService: StudioService) {}
+
+  // SSE is a transport projection; replay and validation remain in the ts-rest event API.
+  @Get('/studio/projects/:projectId/events/stream')
+  async streamProjectEvents(
+    @Req() request: AuthenticatedRequest,
+    @Res() reply: FastifyReply,
+    @Headers('last-event-id') lastEventId?: string,
+  ) {
+    const { projectId } = StudioProjectEventStreamParamsSchema.parse(request.params);
+    const abortController = new AbortController();
+    request.raw.once('close', () => abortController.abort());
+    reply.sse(
+      this.studioService.streamProjectEvents(
+        request.userId,
+        projectId,
+        abortController.signal,
+        lastEventId,
+      ),
+    );
+  }
 
   @TsRestHandler(c.listProjects)
   async listProjects(@Req() request: AuthenticatedRequest) {
@@ -16,6 +38,122 @@ export class StudioController {
         code: 200,
         msg: 'ok',
         data: await this.studioService.listProjects(request.userId, query),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.previewProjectImport)
+  async previewProjectImport(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.previewProjectImport, async ({ body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.previewProjectImport(request.userId, body),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.confirmProjectImport)
+  async confirmProjectImport(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.confirmProjectImport, async ({ params, body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.confirmProjectImport(request.userId, params.importId, body),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listAdaptations)
+  async listAdaptations(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listAdaptations, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listAdaptations(request.userId, params.projectId, query),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.createAdaptation)
+  async createAdaptation(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createAdaptation, async ({ params, body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.createAdaptation(request.userId, params.projectId, body),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.exportProject)
+  async exportProject(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.exportProject, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.exportProject(request.userId, params.projectId, query),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.getProjectOverview)
+  async getProjectOverview(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.getProjectOverview, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.getProjectOverview(request.userId, params.projectId),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listProjectEvents)
+  async listProjectEvents(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listProjectEvents, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listProjectEvents(request.userId, params.projectId, query),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listFinalizationTasks)
+  async listFinalizationTasks(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listFinalizationTasks, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listFinalizationTasks(
+          request.userId,
+          params.projectId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.retryFinalizationTask)
+  async retryFinalizationTask(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.retryFinalizationTask, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.retryFinalizationTask(
+          request.userId,
+          params.projectId,
+          params.taskId,
+        ),
       },
     }));
   }
@@ -44,6 +182,18 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.listBlueprints)
+  async listBlueprints(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listBlueprints, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listBlueprints(request.userId, params.projectId, query),
+      },
+    }));
+  }
+
   @TsRestHandler(c.updateBlueprint)
   async updateBlueprint(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.updateBlueprint, async ({ params, body }) => ({
@@ -64,6 +214,22 @@ export class StudioController {
         code: 200,
         msg: 'ok',
         data: await this.studioService.confirmBlueprint(request.userId, params.projectId),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.restoreBlueprint)
+  async restoreBlueprint(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.restoreBlueprint, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.restoreBlueprint(
+          request.userId,
+          params.projectId,
+          params.blueprintId,
+        ),
       },
     }));
   }
@@ -220,6 +386,40 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.restoreFinalChapterRevision)
+  async restoreFinalChapterRevision(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.restoreFinalChapterRevision, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.restoreFinalChapterRevision(
+          request.userId,
+          params.projectId,
+          params.chapterNumber,
+          params.revisionId,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listChapterFinalizations)
+  async listChapterFinalizations(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listChapterFinalizations, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listChapterFinalizations(
+          request.userId,
+          params.projectId,
+          params.chapterNumber,
+          query,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.compareChapterRevisions)
   async compareChapterRevisions(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.compareChapterRevisions, async ({ params }) => ({
@@ -305,6 +505,43 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.listReviewFindings)
+  async listReviewFindings(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listReviewFindings, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listReviewFindings(
+          request.userId,
+          params.projectId,
+          params.chapterNumber,
+          params.revisionId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.resolveReviewFinding)
+  async resolveReviewFinding(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.resolveReviewFinding, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.resolveReviewFinding(
+          request.userId,
+          params.projectId,
+          params.chapterNumber,
+          params.revisionId,
+          params.findingId,
+          body,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.getJob)
   async getJob(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.getJob, async ({ params }) => ({
@@ -325,6 +562,18 @@ export class StudioController {
         code: 202,
         msg: 'accepted',
         data: await this.studioService.retryJob(request.userId, params.jobId),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.cancelJob)
+  async cancelJob(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.cancelJob, async ({ params }) => ({
+      status: 202 as const,
+      body: {
+        code: 202,
+        msg: 'accepted',
+        data: await this.studioService.cancelJob(request.userId, params.jobId),
       },
     }));
   }

@@ -2,6 +2,7 @@
   "extends": "@repo/config/tsconfig",
   "compilerOptions": {
     "jsx": "react-jsx",
+    "rootDir": ".",
     "paths": {
       "@repo/types": ["../types"],
       "@repo/config": ["../config"]
@@ -10,4 +11,3 @@
   "include": ["**/*.ts"],
   "exclude": ["node_modules"]
 }
-

@@ -13,9 +13,6 @@ export const routing = defineRouting({
   // 默认语言
   defaultLocale,
 
-  // 语言前缀策略
-  // 'as-needed': 默认语言不显示前缀，其他语言显示
-  // 'always': 所有语言都显示前缀
-  // 'never': 不显示前缀（不推荐）
-  localePrefix: 'as-needed',
+  // Keep locale-prefixed routes stable for the HTTPS development entrypoint.
+  localePrefix: 'always',
 });

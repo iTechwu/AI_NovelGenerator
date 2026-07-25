@@ -6,39 +6,65 @@ import { StudioWorkbench } from './studio-workbench';
 const {
   confirmChapterPlan,
   compareChapterRevisions,
+  createAdaptation,
   createAuthorChapterRevision,
   createChapterDraft,
   createFactChange,
   createProject,
   finalizeChapterRevision,
   getBlueprint,
+  getProjectOverview,
   getChapterPlan,
   listChapterRevisions,
+  listAdaptations,
+  listBlueprints,
   listFacts,
   listFactChanges,
+  listChapterFinalizations,
+  listReviewFindings,
   resolveFactChange,
+  resolveReviewFinding,
   restoreChapterRevision,
+  restoreBlueprint,
+  restoreFinalChapterRevision,
   getJob,
+  listFinalizationTasks,
   listProjects,
+  retryFinalizationTask,
+  retryJob,
+  cancelJob,
   saveChapterPlan,
   updateBlueprint,
 } = vi.hoisted(() => ({
   confirmChapterPlan: vi.fn(),
   compareChapterRevisions: vi.fn(),
+  createAdaptation: vi.fn(),
   createAuthorChapterRevision: vi.fn(),
   createChapterDraft: vi.fn(),
   createFactChange: vi.fn(),
   createProject: vi.fn(),
   finalizeChapterRevision: vi.fn(),
   getBlueprint: vi.fn(),
+  getProjectOverview: vi.fn(),
   getChapterPlan: vi.fn(),
   listChapterRevisions: vi.fn(),
+  listAdaptations: vi.fn(),
+  listBlueprints: vi.fn(),
   listFacts: vi.fn(),
   listFactChanges: vi.fn(),
+  listChapterFinalizations: vi.fn(),
+  listReviewFindings: vi.fn(),
   resolveFactChange: vi.fn(),
+  resolveReviewFinding: vi.fn(),
   restoreChapterRevision: vi.fn(),
+  restoreBlueprint: vi.fn(),
+  restoreFinalChapterRevision: vi.fn(),
   getJob: vi.fn(),
+  listFinalizationTasks: vi.fn(),
   listProjects: vi.fn(),
+  retryFinalizationTask: vi.fn(),
+  retryJob: vi.fn(),
+  cancelJob: vi.fn(),
   saveChapterPlan: vi.fn(),
   updateBlueprint: vi.fn(),
 }));
@@ -46,24 +72,38 @@ const {
 vi.mock('@/lib/api/contracts/client', () => ({
   studioClient: {
     listProjects,
+    listAdaptations,
     createProject,
+    createAdaptation,
     getBlueprint,
+    getProjectOverview,
     getJob,
     updateBlueprint,
     confirmBlueprint: vi.fn(),
     getChapterPlan,
     listChapterRevisions,
+    listBlueprints,
     listFacts,
     listFactChanges,
+    listChapterFinalizations,
+    listReviewFindings,
     createFactChange,
     finalizeChapterRevision,
     resolveFactChange,
+    resolveReviewFinding,
     restoreChapterRevision,
+    restoreBlueprint,
+    restoreFinalChapterRevision,
     saveChapterPlan,
     confirmChapterPlan,
     compareChapterRevisions,
     createAuthorChapterRevision,
     createChapterDraft,
+    listFinalizationTasks,
+    retryFinalizationTask,
+    retryJob,
+    cancelJob,
+    exportProject: vi.fn(),
   },
 }));
 
@@ -84,29 +124,77 @@ vi.mock('@repo/ui', () => ({
 describe('StudioWorkbench', () => {
   beforeEach(() => {
     listProjects.mockReset();
+    listAdaptations.mockReset();
     createProject.mockReset();
+    createAdaptation.mockReset();
     createAuthorChapterRevision.mockReset();
     finalizeChapterRevision.mockReset();
     getBlueprint.mockReset();
+    getProjectOverview.mockReset();
     getJob.mockReset();
+    listFinalizationTasks.mockReset();
+    retryFinalizationTask.mockReset();
+    retryJob.mockReset();
+    cancelJob.mockReset();
     getChapterPlan.mockReset();
     listChapterRevisions.mockReset();
+    listBlueprints.mockReset();
     listFacts.mockReset();
     listFactChanges.mockReset();
+    listChapterFinalizations.mockReset();
+    listReviewFindings.mockReset();
     createFactChange.mockReset();
     resolveFactChange.mockReset();
+    resolveReviewFinding.mockReset();
     restoreChapterRevision.mockReset();
+    restoreBlueprint.mockReset();
+    restoreFinalChapterRevision.mockReset();
     saveChapterPlan.mockReset();
     confirmChapterPlan.mockReset();
     compareChapterRevisions.mockReset();
     createChapterDraft.mockReset();
     updateBlueprint.mockReset();
+    getProjectOverview.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          projectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+          finalizedChapterCount: 0,
+          pendingChapterReviewNumbers: [],
+          pendingFactChangeCount: 0,
+          confirmedFactCount: 0,
+          blockingFindingCount: 0,
+          pendingFinalizationTaskCount: 0,
+          failedFinalizationTaskCount: 0,
+        },
+      },
+    });
+    listFinalizationTasks.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 20 } },
+    });
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 20 } },
+    });
     getChapterPlan.mockResolvedValue({ status: 404 });
     listChapterRevisions.mockResolvedValue({
       status: 200,
       body: { data: { list: [], total: 0, page: 1, limit: 20 } },
     });
+    listBlueprints.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 50 } },
+    });
     listFactChanges.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 50 } },
+    });
+    listChapterFinalizations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 50 } },
+    });
+    listReviewFindings.mockResolvedValue({
       status: 200,
       body: { data: { list: [], total: 0, page: 1, limit: 50 } },
     });
@@ -138,6 +226,9 @@ describe('StudioWorkbench', () => {
               targetWordsPerChapter: 3000,
               createdAt: '2026-07-24T02:00:00.000Z',
               updatedAt: '2026-07-24T02:00:00.000Z',
+              finalizedChapterCount: 1,
+              confirmedFactCount: 2,
+              blockingFindingCount: 0,
               latestRun: {
                 id: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
                 status: 'running',
@@ -165,6 +256,349 @@ describe('StudioWorkbench', () => {
       expect(listProjects).toHaveBeenCalledWith({
         query: { page: 1, limit: 20 },
       });
+    });
+  });
+
+  it('refreshes the project library when creation dispatch fails after persistence', async () => {
+    createProject.mockRejectedValue(new Error('runtime unavailable'));
+
+    render(<StudioWorkbench />);
+    fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
+    fireEvent.change(screen.getByLabelText('故事梗概'), {
+      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
+
+    expect(
+      await screen.findByText('创建请求未完成。请先在作品库确认是否已有该作品。'),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listProjects).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('refreshes the project library when creation returns a non-queue response', async () => {
+    createProject.mockResolvedValue({ status: 500 });
+
+    render(<StudioWorkbench />);
+    fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: '雾港来信' } });
+    fireEvent.change(screen.getByLabelText('故事梗概'), {
+      target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
+
+    expect(
+      await screen.findByText('项目没有成功进入生成队列。请在作品库确认项目状态。'),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listProjects).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('refreshes the project library after cancelling an active generation', async () => {
+    const activeJob = {
+      id: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
+      project: {
+        id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        title: '雾港来信',
+        format: 'novel' as const,
+        genre: '悬疑',
+        chapterCount: 20,
+        targetWordsPerChapter: 3000,
+      },
+      status: 'running' as const,
+      progress: 55,
+      currentStep: 'Generating story architecture',
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    getBlueprint.mockResolvedValue({ status: 404 });
+    getJob.mockResolvedValue({ status: 200, body: { data: activeJob } });
+    cancelJob.mockResolvedValue({
+      status: 202,
+      body: { data: { ...activeJob, status: 'cancelled', currentStep: 'Cancellation requested' } },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '取消生成' }));
+
+    await waitFor(() => {
+      expect(cancelJob).toHaveBeenCalledWith({ params: { jobId: activeJob.id }, body: {} });
+      expect(listProjects).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('loads the next project-library page without replacing already opened works', async () => {
+    const firstProject = {
+      id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      title: '雾港来信',
+      format: 'novel' as const,
+      genre: '悬疑',
+      chapterCount: 20,
+      targetWordsPerChapter: 3000,
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+      finalizedChapterCount: 1,
+      confirmedFactCount: 2,
+      blockingFindingCount: 0,
+      latestRun: undefined,
+    };
+    const secondProject = {
+      ...firstProject,
+      id: 'fa46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      title: '雨巷手记',
+    };
+    listProjects.mockResolvedValueOnce({
+      status: 200,
+      body: { data: { list: [firstProject], total: 21, page: 1, limit: 20 } },
+    });
+    listProjects.mockResolvedValueOnce({
+      status: 200,
+      body: { data: { list: [secondProject], total: 21, page: 2, limit: 20 } },
+    });
+
+    render(<StudioWorkbench />);
+
+    expect(await screen.findByText('雾港来信')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '加载更多作品' }));
+
+    expect(await screen.findByText('雨巷手记')).toBeInTheDocument();
+    expect(screen.getByText('雾港来信')).toBeInTheDocument();
+    expect(listProjects).toHaveBeenLastCalledWith({ query: { page: 2, limit: 20 } });
+  });
+
+  it('explains the saved state and recovery action for a recoverable finalization task', async () => {
+    listProjects.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+              title: '雾港来信',
+              format: 'novel',
+              genre: '悬疑',
+              chapterCount: 20,
+              targetWordsPerChapter: 3000,
+              createdAt: '2026-07-24T02:00:00.000Z',
+              updatedAt: '2026-07-24T02:00:00.000Z',
+              finalizedChapterCount: 1,
+              confirmedFactCount: 2,
+              blockingFindingCount: 0,
+              latestRun: undefined,
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 20,
+        },
+      },
+    });
+    getBlueprint.mockResolvedValue({ status: 404 });
+    listFinalizationTasks.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+              projectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+              revisionId: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
+              chapterNumber: 1,
+              type: 'index',
+              status: 'recoverable',
+              attemptCount: 2,
+              lastError: '索引服务暂时不可用',
+              createdAt: '2026-07-24T02:00:00.000Z',
+              updatedAt: '2026-07-24T02:00:00.000Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 20,
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '继续创作' }, { timeout: 5_000 }));
+
+    expect(await screen.findByText('正文和事实裁决已保存；索引尚未完成。')).toBeInTheDocument();
+    expect(screen.getByText('最近错误：索引服务暂时不可用')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+  });
+
+  it('opens an imported project without a generation run after the library reloads', async () => {
+    listProjects.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+              title: '导入的雾港来信',
+              format: 'novel',
+              genre: '悬疑',
+              chapterCount: 20,
+              targetWordsPerChapter: 3000,
+              createdAt: '2026-07-24T02:00:00.000Z',
+              updatedAt: '2026-07-24T02:00:00.000Z',
+              finalizedChapterCount: 20,
+              confirmedFactCount: 2,
+              blockingFindingCount: 0,
+              latestRun: null,
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 20,
+        },
+      },
+    });
+    getBlueprint.mockResolvedValue({ status: 404 });
+
+    render(<StudioWorkbench />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '继续创作' }, { timeout: 5_000 }));
+
+    await waitFor(() => {
+      expect(getProjectOverview).toHaveBeenCalledWith({
+        params: { projectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1' },
+      });
+    });
+    expect(getJob).not.toHaveBeenCalled();
+  });
+
+  it('creates a screenplay adaptation from finalized novel chapters after rights confirmation', async () => {
+    getProjectOverview.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          projectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+          finalizedChapterCount: 1,
+          pendingChapterReviewNumbers: [],
+          pendingFactChangeCount: 0,
+          confirmedFactCount: 0,
+          blockingFindingCount: 0,
+          pendingFinalizationTaskCount: 0,
+          failedFinalizationTaskCount: 0,
+        },
+      },
+    });
+    getBlueprint.mockResolvedValue({ status: 404 });
+    createAdaptation.mockResolvedValue({
+      status: 201,
+      body: {
+        data: {
+          id: '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7',
+          sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+          targetFormat: 'series',
+          episodeCount: 12,
+          minutesPerEpisode: 45,
+          targetAudience: '',
+          adaptationGoal: '',
+          mustPreserve: '',
+          status: 'brief_draft',
+          sourceSnapshot: {
+            id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+            sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+            sourceProjectTitle: '雾港来信',
+            sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+            sourceChapterCount: 1,
+            createdAt: '2026-07-24T02:00:00.000Z',
+          },
+          createdAt: '2026-07-24T02:00:00.000Z',
+          updatedAt: '2026-07-24T02:00:00.000Z',
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    expect(await screen.findByRole('heading', { name: '小说转剧本' })).toBeInTheDocument();
+    fireEvent.click(
+      await screen.findByRole('checkbox', {
+        name: '我确认拥有该小说用于本次改编创作的必要权利。',
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '创建改编项目' }));
+
+    await waitFor(() => {
+      expect(createAdaptation).toHaveBeenCalledWith({
+        params: { projectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1' },
+        body: expect.objectContaining({ rightsConfirmed: true, targetFormat: 'series' }),
+      });
+    });
+    expect(await screen.findByText('剧集改编')).toBeInTheDocument();
+  });
+
+  it('offers recovery for a failed generation after opening the project', async () => {
+    const failedRun = {
+      id: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
+      project: {
+        id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        title: '雾港来信',
+        format: 'novel' as const,
+        genre: '悬疑',
+        chapterCount: 20,
+        targetWordsPerChapter: 3000,
+      },
+      status: 'failed' as const,
+      progress: 100,
+      currentStep: 'Generation failed',
+      error: '运行时暂时不可用',
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    getJob.mockResolvedValue({ status: 200, body: { data: failedRun } });
+    retryJob.mockResolvedValue({
+      status: 202,
+      body: {
+        data: { ...failedRun, status: 'queued', progress: 0, currentStep: 'Queued for recovery' },
+      },
+    });
+    getBlueprint.mockResolvedValue({ status: 404 });
+    listProjects.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: failedRun.project.id,
+              title: failedRun.project.title,
+              format: 'novel',
+              genre: '悬疑',
+              chapterCount: 20,
+              targetWordsPerChapter: 3000,
+              createdAt: failedRun.createdAt,
+              updatedAt: failedRun.updatedAt,
+              finalizedChapterCount: 0,
+              confirmedFactCount: 0,
+              blockingFindingCount: 0,
+              latestRun: failedRun,
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 20,
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    expect(await screen.findByText('最近错误：运行时暂时不可用')).toBeInTheDocument();
+    expect(screen.getByLabelText('当前任务进度')).toHaveAttribute('value', '100');
+    fireEvent.click(await screen.findByRole('button', { name: '重新开始生成' }));
+
+    await waitFor(() => {
+      expect(retryJob).toHaveBeenCalledWith({ params: { jobId: failedRun.id }, body: {} });
+    });
+    expect(await screen.findByText('Queued for recovery')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listProjects).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -503,7 +937,9 @@ describe('StudioWorkbench', () => {
       target: { value: '一封迟到二十年的信件，让雾港的失踪案重新浮出水面。' },
     });
     fireEvent.click(screen.getByRole('button', { name: '生成故事架构' }));
-    expect(await screen.findByRole('button', { name: '生成本章草稿' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: '生成本章草稿' }, { timeout: 5_000 }),
+    ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('本次附加要求'), { target: { value: '先写雨声。' } });
     fireEvent.click(screen.getByRole('button', { name: '生成本章草稿' }));
 

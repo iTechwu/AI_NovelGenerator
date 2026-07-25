@@ -46,6 +46,8 @@ import { DbMetricsService } from '@dofe/infra-prisma';
 import { AuthModule } from '@app/auth';
 import { OidcClientApiModule } from './modules/oidc-client-api/oidc-client-api.module';
 import { StudioModule } from './modules/studio/studio.module';
+import { StudioFinalizationCronModule } from './cron/studio-finalization/studio-finalization-cron.module';
+import { StudioGenerationCronModule } from './cron/studio-generation/studio-generation-cron.module';
 
 const preBootstrapLogger = winston.createLogger({
   level: 'info',
@@ -170,6 +172,8 @@ const loadAppConfig = (): Record<string, unknown> => getConfig() ?? {};
     AuthModule,
     OidcClientApiModule,
     StudioModule,
+    StudioGenerationCronModule,
+    StudioFinalizationCronModule,
   ],
   providers: [
     {
