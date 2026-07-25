@@ -10,6 +10,7 @@ import secrets
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
@@ -17,6 +18,17 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 
 from runtime.engine import GenerationEngine, RuntimeSettings
+
+# Use the OS trust store for TLS verification (macOS Keychain / Windows / Linux
+# system roots). Internal gateways whose CA is trusted by the OS — but not by
+# certifi — then work without disabling verification or shipping a CA bundle.
+# Safe no-op when truststore is not installed.
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
 
 
 logger = logging.getLogger(__name__)
@@ -134,6 +146,17 @@ class HardFactReviewFinding(BaseModel):
     evidence: str
     suggestedAction: str
 
+
+# Load backend/.env so the runtime picks up LLM_* / NOVEL_RUNTIME_* whether it is
+# launched via `pnpm start` (scripts/start-local-services.js) or `uvicorn` directly.
+# override=False (default): a real process env var always wins over the file.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / '.env')
+except ImportError:
+    # python-dotenv is optional; env may also be injected by the Node launcher.
+    pass
 
 settings = RuntimeSettings.from_environment()
 engine = GenerationEngine(settings)
@@ -286,6 +309,12 @@ async def create_generation_job(
             'interfaceFormat': engine._settings.interface_format,
             'temperature': str(engine._settings.temperature),
             'maxTokens': str(engine._settings.max_tokens),
+            'models': {
+                'architecture': engine._settings.model_architecture,
+                'outline': engine._settings.model_outline,
+                'chapterDraft': engine._settings.model_chapter_draft,
+                'consistencyReview': engine._settings.model_consistency_review,
+            },
         },
         status='queued',
         progress=0,

@@ -25,22 +25,33 @@ class RuntimeSettings:
     temperature: float
     max_tokens: int
     timeout_seconds: int
+    # Per-stage model overrides. Each falls back to `model` when unset, so a
+    # single LLM_MODEL still covers deployments that don't need per-stage routing.
+    model_architecture: str
+    model_outline: str
+    model_chapter_draft: str
+    model_consistency_review: str
 
     @classmethod
     def from_environment(cls) -> 'RuntimeSettings':
         shared_secret = os.environ.get('NOVEL_RUNTIME_SHARED_SECRET', '')
         if not shared_secret:
             raise RuntimeError('NOVEL_RUNTIME_SHARED_SECRET must be configured')
+        model = os.environ.get('LLM_MODEL', 'gpt-4.1-mini')
         return cls(
             storage_root=Path(os.environ.get('PROJECT_STORAGE_ROOT', '/data/projects')),
             shared_secret=shared_secret,
             api_key=os.environ.get('LLM_API_KEY', ''),
             base_url=os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1'),
-            model=os.environ.get('LLM_MODEL', 'gpt-4.1-mini'),
+            model=model,
             interface_format=os.environ.get('LLM_INTERFACE_FORMAT', 'OpenAI'),
             temperature=float(os.environ.get('LLM_TEMPERATURE', '0.7')),
             max_tokens=int(os.environ.get('LLM_MAX_TOKENS', '8192')),
             timeout_seconds=int(os.environ.get('LLM_TIMEOUT_SECONDS', '600')),
+            model_architecture=os.environ.get('LLM_MODEL_ARCHITECTURE') or model,
+            model_outline=os.environ.get('LLM_MODEL_OUTLINE') or model,
+            model_chapter_draft=os.environ.get('LLM_MODEL_CHAPTER_DRAFT') or model,
+            model_consistency_review=os.environ.get('LLM_MODEL_CONSISTENCY_REVIEW') or model,
         )
 
 
@@ -157,7 +168,7 @@ class GenerationEngine:
                 interface_format=self._settings.interface_format,
                 api_key=self._settings.api_key,
                 base_url=self._settings.base_url,
-                llm_model=self._settings.model,
+                llm_model=self._settings.model_architecture,
                 topic=project.premise,
                 genre=project.genre,
                 number_of_chapters=project.chapterCount,
@@ -180,7 +191,7 @@ class GenerationEngine:
                     interface_format=self._settings.interface_format,
                     api_key=self._settings.api_key,
                     base_url=self._settings.base_url,
-                    llm_model=self._settings.model,
+                    llm_model=self._settings.model_outline,
                     filepath=str(workspace),
                     number_of_chapters=project.chapterCount,
                     user_guidance=project.guidance,
@@ -223,7 +234,7 @@ class GenerationEngine:
         adapter = create_llm_adapter(
             interface_format=self._settings.interface_format,
             base_url=self._settings.base_url,
-            model_name=self._settings.model,
+            model_name=self._settings.model_chapter_draft,
             api_key=self._settings.api_key,
             temperature=self._settings.temperature,
             max_tokens=self._settings.max_tokens,
@@ -237,8 +248,17 @@ class GenerationEngine:
         fact_changes: list[dict[str, str | float]] = []
         try:
             report(85, 'Extracting fact changes')
+            consistency_adapter = create_llm_adapter(
+                interface_format=self._settings.interface_format,
+                base_url=self._settings.base_url,
+                model_name=self._settings.model_consistency_review,
+                api_key=self._settings.api_key,
+                temperature=self._settings.temperature,
+                max_tokens=self._settings.max_tokens,
+                timeout=self._settings.timeout_seconds,
+            )
             fact_changes = self._extract_fact_changes(
-                adapter,
+                consistency_adapter,
                 chapter_plan,
                 content,
                 invoke_with_cleaning,

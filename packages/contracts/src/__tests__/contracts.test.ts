@@ -10,14 +10,17 @@ describe('API Contracts', () => {
   describe('Contract Exports', () => {
     const expectedContracts = [
       'analyticsContract',
+      'authContract',
       'downloadContract',
+      'fileContract',
       'messageContract',
-      'oidcAuthContract',
       'riskWordsContract',
       'settingContract',
       'smsContract',
+      'studioContract',
       'systemContract',
       'taskContract',
+      'uploaderContract',
       'userContract',
       'webhookContract',
     ];
@@ -38,15 +41,17 @@ describe('API Contracts', () => {
       expect(exportedContractNames.sort()).toEqual(
         [
           'analyticsContract',
+          'authContract',
           'downloadContract',
+          'fileContract',
           'messageContract',
-          'oidcAuthContract',
           'riskWordsContract',
           'settingContract',
           'smsContract',
           'studioContract',
           'systemContract',
           'taskContract',
+          'uploaderContract',
           'userContract',
           'webhookContract',
         ].sort(),

@@ -8,6 +8,14 @@ const {
   confirmAdaptationBrief,
   compareChapterRevisions,
   createAdaptation,
+  createAdaptationDecision,
+  resolveAdaptationDecision,
+  listAdaptationDecisions,
+  listAdaptationSourceChapters,
+  startScenePlanning,
+  listScenePlans,
+  saveScenePlan,
+  confirmScenePlan,
   createAuthorChapterRevision,
   createChapterDraft,
   createFactChange,
@@ -42,6 +50,14 @@ const {
   confirmAdaptationBrief: vi.fn(),
   compareChapterRevisions: vi.fn(),
   createAdaptation: vi.fn(),
+  createAdaptationDecision: vi.fn(),
+  resolveAdaptationDecision: vi.fn(),
+  listAdaptationDecisions: vi.fn(),
+  listAdaptationSourceChapters: vi.fn(),
+  startScenePlanning: vi.fn(),
+  listScenePlans: vi.fn(),
+  saveScenePlan: vi.fn(),
+  confirmScenePlan: vi.fn(),
   createAuthorChapterRevision: vi.fn(),
   createChapterDraft: vi.fn(),
   createFactChange: vi.fn(),
@@ -81,6 +97,14 @@ vi.mock('@/lib/api/contracts/client', () => ({
     createAdaptation,
     updateAdaptationBrief,
     confirmAdaptationBrief,
+    listAdaptationDecisions,
+    listAdaptationSourceChapters,
+    createAdaptationDecision,
+    resolveAdaptationDecision,
+    startScenePlanning,
+    listScenePlans,
+    saveScenePlan,
+    confirmScenePlan,
     getBlueprint,
     getProjectOverview,
     getJob,
@@ -148,6 +172,14 @@ describe('StudioWorkbench', () => {
     createAdaptation.mockReset();
     updateAdaptationBrief.mockReset();
     confirmAdaptationBrief.mockReset();
+    listAdaptationDecisions.mockReset();
+    listAdaptationSourceChapters.mockReset();
+    createAdaptationDecision.mockReset();
+    resolveAdaptationDecision.mockReset();
+    startScenePlanning.mockReset();
+    listScenePlans.mockReset();
+    saveScenePlan.mockReset();
+    confirmScenePlan.mockReset();
     createAuthorChapterRevision.mockReset();
     finalizeChapterRevision.mockReset();
     getBlueprint.mockReset();
@@ -200,6 +232,23 @@ describe('StudioWorkbench', () => {
     });
     updateAdaptationBrief.mockResolvedValue({ status: 500 });
     confirmAdaptationBrief.mockResolvedValue({ status: 500 });
+    listAdaptationDecisions.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 50 } },
+    });
+    listAdaptationSourceChapters.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 100 } },
+    });
+    createAdaptationDecision.mockResolvedValue({ status: 500 });
+    resolveAdaptationDecision.mockResolvedValue({ status: 500 });
+    startScenePlanning.mockResolvedValue({ status: 500 });
+    listScenePlans.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 100 } },
+    });
+    saveScenePlan.mockResolvedValue({ status: 500 });
+    confirmScenePlan.mockResolvedValue({ status: 500 });
     getChapterPlan.mockResolvedValue({ status: 404 });
     listChapterRevisions.mockResolvedValue({
       status: 200,
@@ -653,6 +702,235 @@ describe('StudioWorkbench', () => {
       });
     });
     expect(await screen.findByText('待蓝图审阅')).toBeInTheDocument();
+  });
+
+  it('records and resolves source-anchored adaptation decisions during blueprint review', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const sourceChapterId = 'c2fe573d-e9e0-423e-9319-4f6fc375e75d';
+    const decisionId = '44bc6378-7f2d-43a8-8ee3-9ed5d72c19d8';
+    const draftAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线，同时强化女主与父亲的冲突。',
+      mustPreserve: '保留雾港秘密与终局反转。',
+      status: 'brief_draft' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 1,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    getProjectOverview.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          projectId: draftAdaptation.sourceProjectId,
+          finalizedChapterCount: 1,
+          pendingChapterReviewNumbers: [],
+          pendingFactChangeCount: 0,
+          confirmedFactCount: 0,
+          blockingFindingCount: 0,
+          pendingFinalizationTaskCount: 0,
+          failedFinalizationTaskCount: 0,
+        },
+      },
+    });
+    getBlueprint.mockResolvedValue({ status: 404 });
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [draftAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    listAdaptationSourceChapters.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: sourceChapterId,
+              snapshotId: draftAdaptation.sourceSnapshot.id,
+              sourceRevisionId: '8a1f5e2c-7b3a-4d9e-b6c1-2f4a8d9e0b3a',
+              chapterNumber: 1,
+              title: '迟到的信件',
+              content: '雨声先于信件抵达。',
+              contentHash: 'a'.repeat(64),
+              wordCount: 8,
+              createdAt: '2026-07-24T02:00:00.000Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 100,
+        },
+      },
+    });
+    const proposedDecision = {
+      id: decisionId,
+      adaptationId,
+      sourceSnapshotId: draftAdaptation.sourceSnapshot.id,
+      sourceChapter: { id: sourceChapterId, chapterNumber: 1, title: '迟到的信件' },
+      type: 'merge' as const,
+      impact: 'high' as const,
+      proposal: '合并第 1、2 章两位配角的同一线索。',
+      rationale: '减少重复信息，强化主线悬念。',
+      status: 'proposed' as const,
+      resolutionReason: null,
+      resolvedAt: null,
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptationDecisions.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [proposedDecision], total: 1, page: 1, limit: 50 } },
+    });
+    confirmAdaptationBrief.mockResolvedValue({
+      status: 200,
+      body: { data: { ...draftAdaptation, status: 'blueprint_review' } },
+    });
+    resolveAdaptationDecision.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          ...proposedDecision,
+          status: 'accepted',
+          resolutionReason: '保留合并后的关键情绪转折。',
+          resolvedAt: '2026-07-25T08:00:00.000Z',
+          updatedAt: '2026-07-25T08:00:00.000Z',
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '编辑简报' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认简报并进入蓝图审阅' }));
+
+    await waitFor(() => {
+      expect(confirmAdaptationBrief).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {},
+      });
+    });
+    await screen.findByText('改编取舍');
+    await waitFor(() => {
+      expect(listAdaptationDecisions).toHaveBeenCalledWith({
+        params: { adaptationId },
+        query: { page: 1, limit: 50 },
+      });
+      expect(listAdaptationSourceChapters).toHaveBeenCalledWith({
+        params: { adaptationId },
+        query: { page: 1, limit: 100 },
+      });
+    });
+
+    fireEvent.change(screen.getByLabelText(`取舍处理理由 ${decisionId}`), {
+      target: { value: '保留合并后的关键情绪转折。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '接受' }));
+
+    await waitFor(() => {
+      expect(resolveAdaptationDecision).toHaveBeenCalledWith({
+        params: { adaptationId, decisionId },
+        body: {
+          outcome: 'accepted',
+          resolutionReason: '保留合并后的关键情绪转折。',
+        },
+      });
+    });
+    expect(await screen.findByText('已接受')).toBeInTheDocument();
+  });
+
+  it('advances into scene planning and confirms a per-episode plan', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const blueprintAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'blueprint_review' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [blueprintAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    startScenePlanning.mockResolvedValue({
+      status: 200,
+      body: { data: { ...blueprintAdaptation, status: 'scene_planning' } },
+    });
+    const savedPlan = {
+      id: '6a4c2e8d-9b1f-4c3a-8d2e-1b5f6a7c8d9e',
+      adaptationId,
+      episodeNumber: 1,
+      title: '雾港重逢',
+      synopsis: '女主回到雾港码头。',
+      sceneOutline: [],
+      needsReview: false,
+      confirmedAt: null,
+      createdAt: '2026-07-25T02:00:00.000Z',
+      updatedAt: '2026-07-25T02:00:00.000Z',
+    };
+    saveScenePlan.mockResolvedValue({ status: 200, body: { data: savedPlan } });
+    confirmScenePlan.mockResolvedValue({
+      status: 200,
+      body: { data: { ...savedPlan, confirmedAt: '2026-07-25T03:00:00.000Z' } },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    fireEvent.click(await screen.findByRole('button', { name: '进入场景计划' }));
+
+    await waitFor(() => {
+      expect(startScenePlanning).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {},
+      });
+    });
+    await screen.findByText('场景计划');
+
+    fireEvent.change(screen.getByLabelText('本集标题'), { target: { value: '雾港重逢' } });
+    fireEvent.change(screen.getByLabelText('本集梗概'), {
+      target: { value: '女主回到雾港码头。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存本集计划' }));
+
+    await waitFor(() => {
+      expect(saveScenePlan).toHaveBeenCalledWith({
+        params: { adaptationId, episodeNumber: 1 },
+        body: { title: '雾港重逢', synopsis: '女主回到雾港码头。', sceneOutline: [] },
+      });
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '确认本集计划' }));
+
+    await waitFor(() => {
+      expect(confirmScenePlan).toHaveBeenCalledWith({
+        params: { adaptationId, episodeNumber: 1 },
+        body: {},
+      });
+    });
+    expect(await screen.findByText('已确认')).toBeInTheDocument();
   });
 
   it('offers recovery for a failed generation after opening the project', async () => {

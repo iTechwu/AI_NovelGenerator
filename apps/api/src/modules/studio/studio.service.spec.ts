@@ -69,11 +69,25 @@ describe('StudioService', () => {
   const adaptationSourceChapterService = {
     createMany: jest.fn(),
     getById: jest.fn(),
+    list: jest.fn(),
   };
   const adaptationDecisionService = {
     create: jest.fn(),
     getById: jest.fn(),
     list: jest.fn(),
+    update: jest.fn(),
+    count: jest.fn(),
+  };
+  const scenePlanService = {
+    list: jest.fn(),
+    get: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  };
+  const sourceSceneMappingService = {
+    list: jest.fn(),
+    getById: jest.fn(),
+    create: jest.fn(),
     update: jest.fn(),
   };
   const blueprintService = {
@@ -172,6 +186,8 @@ describe('StudioService', () => {
       adaptationSourceSnapshotService as never,
       adaptationSourceChapterService as never,
       adaptationDecisionService as never,
+      scenePlanService as never,
+      sourceSceneMappingService as never,
       runService as never,
       blueprintService as never,
       chapterPlanService as never,
@@ -573,6 +589,288 @@ describe('StudioService', () => {
       sourceChapter: { id: sourceChapterId },
       resolutionReason: '保留合并后的关键情绪转折。',
     });
+  });
+
+  it('lists the immutable source chapters captured for an owned adaptation', async () => {
+    const chapters = [
+      {
+        id: sourceChapterId,
+        snapshotId,
+        sourceRevisionId: '8a1f5e2c-7b3a-4d9e-b6c1-2f4a8d9e0b3a',
+        chapterNumber: 1,
+        title: '迟到的信件',
+        content: '雨声先于信件抵达。',
+        contentHash: 'a'.repeat(64),
+        wordCount: 8,
+        createdAt,
+      },
+      {
+        id: '3b9d6f1a-2c4e-4a7b-9d8e-1f2a3b4c5d6e',
+        snapshotId,
+        sourceRevisionId: '9b2f6e3d-8c4b-4a0e-c7d2-3a5b9e0f1c4b',
+        chapterNumber: 2,
+        title: '码头的重逢',
+        content: '码头灯影摇晃。',
+        contentHash: 'b'.repeat(64),
+        wordCount: 7,
+        createdAt,
+      },
+    ];
+    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, ownerId });
+    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationSourceChapterService.list.mockResolvedValue({
+      list: chapters,
+      total: 2,
+      page: 1,
+      limit: 20,
+    });
+
+    const result = await service.listAdaptationSourceChapters(ownerId, adaptationId, {
+      page: 1,
+      limit: 20,
+    });
+
+    expect(adaptationSourceChapterService.list).toHaveBeenCalledWith(
+      { snapshotId },
+      { page: 1, limit: 20, orderBy: { chapterNumber: 'asc' } },
+    );
+    expect(result.list).toEqual([
+      expect.objectContaining({ chapterNumber: 1, title: '迟到的信件', snapshotId }),
+      expect.objectContaining({ chapterNumber: 2, title: '码头的重逢', snapshotId }),
+    ]);
+  });
+
+  it('blocks scene planning while a high-impact decision is unresolved', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      status: 'BLUEPRINT_REVIEW',
+    });
+    adaptationDecisionService.count.mockResolvedValue(1);
+
+    await expect(service.startScenePlanning(ownerId, adaptationId)).rejects.toMatchObject({});
+    expect(adaptationProjectService.update).not.toHaveBeenCalled();
+    expect(adaptationDecisionService.count).toHaveBeenCalledWith({
+      adaptationId,
+      impact: 'HIGH',
+      status: 'PROPOSED',
+    });
+  });
+
+  it('advances to scene planning once every high-impact decision is resolved', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      status: 'BLUEPRINT_REVIEW',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 2,
+      createdAt,
+    });
+    adaptationDecisionService.count.mockResolvedValue(0);
+    adaptationProjectService.update.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      rightsConfirmedAt: createdAt,
+      status: 'SCENE_PLANNING',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const result = await service.startScenePlanning(ownerId, adaptationId);
+
+    expect(adaptationProjectService.update).toHaveBeenCalledWith(
+      { id: adaptationId },
+      { status: 'SCENE_PLANNING' },
+    );
+    expect(result.status).toBe('scene_planning');
+  });
+
+  it('creates and reopens a per-episode scene plan during scene planning', async () => {
+    const sceneOutline = [
+      {
+        sceneNumber: 1,
+        title: '码头重逢',
+        synopsis: '女主回到雾港码头。',
+        act: 'setup',
+        sourceChapterIds: [sourceChapterId],
+      },
+    ];
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      status: 'SCENE_PLANNING',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    scenePlanService.get.mockResolvedValue(null);
+    scenePlanService.create.mockResolvedValue({
+      id: '6a4c2e8d-9b1f-4c3a-8d2e-1b5f6a7c8d9e',
+      adaptationId,
+      episodeNumber: 1,
+      title: '第 1 集',
+      synopsis: '女主回到雾港。',
+      sceneOutline,
+      needsReview: false,
+      confirmedAt: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const created = await service.saveScenePlan(ownerId, adaptationId, 1, {
+      title: '第 1 集',
+      synopsis: '女主回到雾港。',
+      sceneOutline,
+    });
+
+    expect(scenePlanService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ episodeNumber: 1, adaptation: { connect: { id: adaptationId } } }),
+    );
+    expect(created.sceneOutline).toEqual(sceneOutline);
+
+    const confirmedPlan = {
+      id: '6a4c2e8d-9b1f-4c3a-8d2e-1b5f6a7c8d9e',
+      adaptationId,
+      episodeNumber: 1,
+      title: '第 1 集',
+      synopsis: '女主回到雾港。',
+      sceneOutline,
+      needsReview: false,
+      confirmedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    scenePlanService.get.mockResolvedValue({ ...confirmedPlan, confirmedAt: null });
+    scenePlanService.update.mockResolvedValue(confirmedPlan);
+    const confirmed = await service.confirmScenePlan(ownerId, adaptationId, 1);
+    expect(confirmed.confirmedAt).toBe(createdAt.toISOString());
+  });
+
+  it('anchors a planned scene to a real source chapter and rejects unknown scenes', async () => {
+    const sceneOutline = [
+      { sceneNumber: 1, title: '码头重逢', synopsis: '女主回到雾港码头。', sourceChapterIds: [] },
+    ];
+    const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
+    const mappingId = '5e4d3c2b-1a0f-9e8d-7c6b-5a4f3e2d1c0b';
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      status: 'SCENE_PLANNING',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationSourceChapterService.getById.mockResolvedValue({
+      id: sourceChapterId,
+      snapshotId,
+      chapterNumber: 1,
+      title: '迟到的信件',
+    });
+    scenePlanService.get.mockResolvedValue({
+      id: scenePlanId,
+      adaptationId,
+      episodeNumber: 1,
+      sceneOutline,
+    });
+    sourceSceneMappingService.create.mockResolvedValue({
+      id: mappingId,
+      adaptationId,
+      scenePlanId,
+      episodeNumber: 1,
+      sceneNumber: 1,
+      sourceChapterId,
+      evidenceAnchor: null,
+      status: 'PROPOSED',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const mapping = await service.createSourceSceneMapping(ownerId, adaptationId, {
+      episodeNumber: 1,
+      sceneNumber: 1,
+      sourceChapterId,
+    });
+
+    expect(sourceSceneMappingService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scenePlan: { connect: { id: scenePlanId } },
+        sourceChapter: { connect: { id: sourceChapterId } },
+        episodeNumber: 1,
+        sceneNumber: 1,
+        status: 'PROPOSED',
+      }),
+    );
+    expect(mapping).toMatchObject({
+      status: 'proposed',
+      sourceChapter: { id: sourceChapterId, title: '迟到的信件' },
+    });
+
+    // An unknown scene number must not produce an untraceable mapping.
+    sourceSceneMappingService.create.mockClear();
+    await expect(
+      service.createSourceSceneMapping(ownerId, adaptationId, {
+        episodeNumber: 1,
+        sceneNumber: 99,
+        sourceChapterId,
+      }),
+    ).rejects.toMatchObject({});
+    expect(sourceSceneMappingService.create).not.toHaveBeenCalled();
+  });
+
+  it('resolves a source-scene mapping to confirmed or stale with an audit reason', async () => {
+    const mappingId = '5e4d3c2b-1a0f-9e8d-7c6b-5a4f3e2d1c0b';
+    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, ownerId });
+    sourceSceneMappingService.getById.mockResolvedValue({
+      id: mappingId,
+      adaptationId,
+      scenePlanId: 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e',
+      episodeNumber: 1,
+      sceneNumber: 1,
+      sourceChapterId,
+      evidenceAnchor: null,
+      status: 'PROPOSED',
+      createdAt,
+      updatedAt: createdAt,
+    });
+    adaptationSourceChapterService.getById.mockResolvedValue({
+      id: sourceChapterId,
+      snapshotId,
+      chapterNumber: 1,
+      title: '迟到的信件',
+    });
+    sourceSceneMappingService.update.mockResolvedValue({
+      id: mappingId,
+      adaptationId,
+      scenePlanId: 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e',
+      episodeNumber: 1,
+      sceneNumber: 1,
+      sourceChapterId,
+      evidenceAnchor: null,
+      status: 'STALE',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const result = await service.resolveSourceSceneMapping(ownerId, adaptationId, mappingId, {
+      status: 'stale',
+      reason: '原作该章节已被重写，需重新对照。',
+    });
+
+    expect(sourceSceneMappingService.update).toHaveBeenCalledWith(
+      { id: mappingId },
+      { status: 'STALE' },
+    );
+    expect(result.status).toBe('stale');
   });
 
   it('projects a dispatch failure after persisting the project and queued run', async () => {

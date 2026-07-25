@@ -131,6 +131,29 @@ export const StudioAdaptationProjectSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
+// The immutable per-chapter copy captured when an adaptation is created.
+// Exposed standalone so blueprint decisions, scene planning and source-scene
+// mapping can anchor to a specific chapter without re-reading the source novel.
+export const StudioAdaptationSourceChapterSchema = z.object({
+  id: z.string().uuid(),
+  snapshotId: z.string().uuid(),
+  sourceRevisionId: z.string().uuid(),
+  chapterNumber: z.number().int().positive(),
+  title: z.string(),
+  content: z.string(),
+  contentHash: z.string(),
+  wordCount: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+});
+
+export const StudioAdaptationSourceChapterListQuerySchema = PaginationQuerySchema.pick({
+  limit: true,
+  page: true,
+});
+export const StudioAdaptationSourceChapterListResponseSchema = PaginatedResponseSchema(
+  StudioAdaptationSourceChapterSchema,
+);
+
 export const StudioAdaptationListQuerySchema = PaginationQuerySchema.pick({
   limit: true,
   page: true,
@@ -193,6 +216,87 @@ export const StudioAdaptationDecisionListQuerySchema = PaginationQuerySchema.pic
 });
 export const StudioAdaptationDecisionListResponseSchema = PaginatedResponseSchema(
   StudioAdaptationDecisionSchema,
+);
+
+export const StudioScenePlanActSchema = z.enum(['setup', 'development', 'twist', 'resolution']);
+
+// A single scene beat inside a per-episode plan. `sourceChapterIds` anchors the
+// scene to immutable snapshot chapters so screenplay generation and source-scene
+// mapping remain traceable (PRD P13).
+export const StudioScenePlanSceneSchema = z.object({
+  sceneNumber: z.number().int().positive(),
+  title: z.string().trim().min(1).max(200),
+  synopsis: z.string().trim().max(5000),
+  act: StudioScenePlanActSchema.optional(),
+  sourceChapterIds: z.array(z.string().uuid()).default([]),
+});
+
+export const StudioScenePlanSceneOutlineSchema = z
+  .array(StudioScenePlanSceneSchema)
+  .max(200)
+  .default([]);
+
+export const StudioScenePlanSchema = z.object({
+  id: z.string().uuid(),
+  adaptationId: z.string().uuid(),
+  episodeNumber: z.number().int().positive(),
+  title: z.string(),
+  synopsis: z.string(),
+  sceneOutline: StudioScenePlanSceneOutlineSchema,
+  needsReview: z.boolean(),
+  confirmedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const SaveStudioScenePlanSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  synopsis: z.string().trim().min(1).max(5000),
+  sceneOutline: StudioScenePlanSceneOutlineSchema,
+});
+
+export const StudioScenePlanListQuerySchema = PaginationQuerySchema.pick({
+  limit: true,
+  page: true,
+});
+export const StudioScenePlanListResponseSchema = PaginatedResponseSchema(StudioScenePlanSchema);
+
+export const StudioSourceMappingStatusSchema = z.enum(['proposed', 'confirmed', 'stale']);
+
+export const StudioSourceSceneMappingSchema = z.object({
+  id: z.string().uuid(),
+  adaptationId: z.string().uuid(),
+  scenePlanId: z.string().uuid(),
+  episodeNumber: z.number().int().positive(),
+  sceneNumber: z.number().int().positive(),
+  sourceChapter: z.object({
+    id: z.string().uuid(),
+    chapterNumber: z.number().int().positive(),
+    title: z.string(),
+  }),
+  evidenceAnchor: z.string().nullable(),
+  status: StudioSourceMappingStatusSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const CreateStudioSourceSceneMappingSchema = z.object({
+  episodeNumber: z.coerce.number().int().min(1),
+  sceneNumber: z.coerce.number().int().min(1),
+  sourceChapterId: z.string().uuid(),
+  evidenceAnchor: z.string().trim().max(5000).optional(),
+});
+
+export const ResolveStudioSourceSceneMappingSchema = z.object({
+  status: z.enum(['confirmed', 'stale']),
+  reason: z.string().trim().min(1).max(5000),
+});
+
+export const StudioSourceSceneMappingListQuerySchema = PaginationQuerySchema.extend({
+  episodeNumber: z.coerce.number().int().min(1).optional(),
+});
+export const StudioSourceSceneMappingListResponseSchema = PaginatedResponseSchema(
+  StudioSourceSceneMappingSchema,
 );
 
 export const StudioProjectImportResultSchema = z.object({
@@ -600,6 +704,13 @@ export type UpdateStudioAdaptationBrief = z.infer<typeof UpdateStudioAdaptationB
 export type StudioAdaptationProject = z.infer<typeof StudioAdaptationProjectSchema>;
 export type StudioAdaptationListQuery = z.infer<typeof StudioAdaptationListQuerySchema>;
 export type StudioAdaptationListResponse = z.infer<typeof StudioAdaptationListResponseSchema>;
+export type StudioAdaptationSourceChapter = z.infer<typeof StudioAdaptationSourceChapterSchema>;
+export type StudioAdaptationSourceChapterListQuery = z.infer<
+  typeof StudioAdaptationSourceChapterListQuerySchema
+>;
+export type StudioAdaptationSourceChapterListResponse = z.infer<
+  typeof StudioAdaptationSourceChapterListResponseSchema
+>;
 export type CreateStudioAdaptationDecision = z.infer<
   typeof CreateStudioAdaptationDecisionSchema
 >;
@@ -612,6 +723,25 @@ export type StudioAdaptationDecisionListQuery = z.infer<
 >;
 export type StudioAdaptationDecisionListResponse = z.infer<
   typeof StudioAdaptationDecisionListResponseSchema
+>;
+export type StudioScenePlanScene = z.infer<typeof StudioScenePlanSceneSchema>;
+export type StudioScenePlanSceneOutline = z.infer<typeof StudioScenePlanSceneOutlineSchema>;
+export type StudioScenePlan = z.infer<typeof StudioScenePlanSchema>;
+export type SaveStudioScenePlan = z.infer<typeof SaveStudioScenePlanSchema>;
+export type StudioScenePlanListQuery = z.infer<typeof StudioScenePlanListQuerySchema>;
+export type StudioScenePlanListResponse = z.infer<typeof StudioScenePlanListResponseSchema>;
+export type StudioSourceSceneMapping = z.infer<typeof StudioSourceSceneMappingSchema>;
+export type CreateStudioSourceSceneMapping = z.infer<
+  typeof CreateStudioSourceSceneMappingSchema
+>;
+export type ResolveStudioSourceSceneMapping = z.infer<
+  typeof ResolveStudioSourceSceneMappingSchema
+>;
+export type StudioSourceSceneMappingListQuery = z.infer<
+  typeof StudioSourceSceneMappingListQuerySchema
+>;
+export type StudioSourceSceneMappingListResponse = z.infer<
+  typeof StudioSourceSceneMappingListResponseSchema
 >;
 export type StudioFactProposal = z.infer<typeof StudioFactProposalSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;

@@ -15,6 +15,7 @@ import {
   Italic,
   List,
   LoaderCircle,
+  Plus,
   RefreshCw,
   Save,
   Sparkles,
@@ -51,6 +52,10 @@ import type {
   StudioFactChange,
   CreateStudioFactChange,
   CreateStudioAdaptation,
+  CreateStudioAdaptationDecision,
+  StudioAdaptationDecision,
+  StudioAdaptationSourceChapter,
+  StudioScenePlan,
   StudioProjectListResponse,
   StudioProjectOverview,
   StudioProjectImportPreview,
@@ -88,6 +93,44 @@ const initialAdaptationDraft: AdaptationDraft = {
   adaptationGoal: '',
   mustPreserve: '',
   rightsConfirmed: false,
+};
+
+const initialAdaptationDecisionForm: CreateStudioAdaptationDecision = {
+  sourceChapterId: '',
+  type: 'cut',
+  impact: 'medium',
+  proposal: '',
+  rationale: '',
+};
+
+const adaptationDecisionTypeLabel: Record<StudioAdaptationDecision['type'], string> = {
+  cut: '删减',
+  merge: '合并',
+  reorder: '重排',
+  pov_change: '视角变更',
+  expand: '扩写',
+};
+
+const adaptationDecisionImpactLabel: Record<StudioAdaptationDecision['impact'], string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+};
+
+const adaptationDecisionStatusLabel: Record<StudioAdaptationDecision['status'], string> = {
+  proposed: '待处理',
+  accepted: '已接受',
+  edited: '已调整',
+  rejected: '已拒绝',
+};
+
+const adaptationStatusLabel: Record<StudioAdaptationProject['status'], string> = {
+  brief_draft: '简报草稿',
+  blueprint_review: '待蓝图审阅',
+  scene_planning: '场景计划中',
+  script_writing: '剧本生成中',
+  review_ready: '待对照审阅',
+  deliverable: '可交付',
 };
 
 const initialChapterPlan: UpdateStudioChapterPlan = {
@@ -308,6 +351,27 @@ export function StudioWorkbench() {
   const [selectedAdaptationId, setSelectedAdaptationId] = useState<string | null>(null);
   const [isSavingAdaptationBrief, setIsSavingAdaptationBrief] = useState(false);
   const [isConfirmingAdaptationBrief, setIsConfirmingAdaptationBrief] = useState(false);
+  const [adaptationDecisions, setAdaptationDecisions] = useState<StudioAdaptationDecision[]>([]);
+  const [adaptationSourceChapters, setAdaptationSourceChapters] = useState<
+    StudioAdaptationSourceChapter[]
+  >([]);
+  const [isLoadingAdaptationDecisions, setIsLoadingAdaptationDecisions] = useState(false);
+  const [decisionForm, setDecisionForm] = useState<CreateStudioAdaptationDecision>(
+    initialAdaptationDecisionForm,
+  );
+  const [isCreatingAdaptationDecision, setIsCreatingAdaptationDecision] = useState(false);
+  const [decisionResolutionDrafts, setDecisionResolutionDrafts] = useState<
+    Record<string, { resolutionReason: string }>
+  >({});
+  const [resolvingDecisionId, setResolvingDecisionId] = useState<string | null>(null);
+  const [adaptationDecisionError, setAdaptationDecisionError] = useState<string | null>(null);
+  const [scenePlans, setScenePlans] = useState<StudioScenePlan[]>([]);
+  const [isLoadingScenePlans, setIsLoadingScenePlans] = useState(false);
+  const [isStartingScenePlanning, setIsStartingScenePlanning] = useState(false);
+  const [scenePlanDraft, setScenePlanDraft] = useState({ episodeNumber: 1, title: '', synopsis: '' });
+  const [isSavingScenePlan, setIsSavingScenePlan] = useState(false);
+  const [confirmingScenePlanEpisode, setConfirmingScenePlanEpisode] = useState<number | null>(null);
+  const [scenePlanError, setScenePlanError] = useState<string | null>(null);
   const selectedAdaptation = adaptations.find((item) => item.id === selectedAdaptationId) ?? null;
   const isAdaptationBriefEditable =
     !selectedAdaptation || selectedAdaptation.status === 'brief_draft';
@@ -379,6 +443,50 @@ export function StudioWorkbench() {
     }
   }, []);
 
+  const loadAdaptationDecisions = useCallback(async (adaptationId: string) => {
+    setIsLoadingAdaptationDecisions(true);
+    setAdaptationDecisionError(null);
+    try {
+      const [decisionResponse, chapterResponse] = await Promise.all([
+        studioClient.listAdaptationDecisions({
+          params: { adaptationId },
+          query: { page: 1, limit: 50 },
+        }),
+        studioClient.listAdaptationSourceChapters({
+          params: { adaptationId },
+          query: { page: 1, limit: 100 },
+        }),
+      ]);
+      if (decisionResponse.status === 200 && chapterResponse.status === 200) {
+        setAdaptationDecisions(decisionResponse.body.data.list);
+        setAdaptationSourceChapters(chapterResponse.body.data.list);
+      } else {
+        setAdaptationDecisionError('改编取舍暂时无法加载。');
+      }
+    } catch {
+      setAdaptationDecisionError('改编取舍暂时无法加载。');
+    } finally {
+      setIsLoadingAdaptationDecisions(false);
+    }
+  }, []);
+
+  const loadScenePlans = useCallback(async (adaptationId: string) => {
+    setIsLoadingScenePlans(true);
+    setScenePlanError(null);
+    try {
+      const response = await studioClient.listScenePlans({
+        params: { adaptationId },
+        query: { page: 1, limit: 100 },
+      });
+      if (response.status === 200) setScenePlans(response.body.data.list);
+      else setScenePlanError('场景计划暂时无法加载。');
+    } catch {
+      setScenePlanError('场景计划暂时无法加载。');
+    } finally {
+      setIsLoadingScenePlans(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadProjects(), 0);
     return () => window.clearTimeout(timer);
@@ -399,6 +507,23 @@ export function StudioWorkbench() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [activeProjectId, loadAdaptations, loadProjectStatus]);
+
+  useEffect(() => {
+    if (selectedAdaptation?.status === 'blueprint_review') {
+      void loadAdaptationDecisions(selectedAdaptation.id);
+    } else {
+      setAdaptationDecisions([]);
+      setAdaptationSourceChapters([]);
+      setDecisionResolutionDrafts({});
+      setDecisionForm(initialAdaptationDecisionForm);
+    }
+    if (selectedAdaptation?.status === 'scene_planning') {
+      void loadScenePlans(selectedAdaptation.id);
+    } else {
+      setScenePlans([]);
+      setScenePlanDraft({ episodeNumber: 1, title: '', synopsis: '' });
+    }
+  }, [selectedAdaptation, loadAdaptationDecisions, loadScenePlans]);
 
   useEffect(() => {
     if (!activeProjectId) return;
@@ -1003,6 +1128,153 @@ export function StudioWorkbench() {
       setAdaptationError('改编简报确认失败，请补全必填内容后重试。');
     } finally {
       setIsConfirmingAdaptationBrief(false);
+    }
+  };
+
+  const createAdaptationDecision = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedAdaptation) return;
+    if (
+      !decisionForm.sourceChapterId ||
+      !decisionForm.proposal.trim() ||
+      !decisionForm.rationale.trim()
+    )
+      return;
+    setIsCreatingAdaptationDecision(true);
+    setAdaptationDecisionError(null);
+    try {
+      const response = await studioClient.createAdaptationDecision({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {
+          sourceChapterId: decisionForm.sourceChapterId,
+          type: decisionForm.type,
+          impact: decisionForm.impact,
+          proposal: decisionForm.proposal.trim(),
+          rationale: decisionForm.rationale.trim(),
+        },
+      });
+      if (response.status === 201) {
+        setAdaptationDecisions((current) => [response.body.data, ...current]);
+        setDecisionForm(initialAdaptationDecisionForm);
+      } else setAdaptationDecisionError('取舍记录失败。');
+    } catch {
+      setAdaptationDecisionError('取舍记录失败。');
+    } finally {
+      setIsCreatingAdaptationDecision(false);
+    }
+  };
+
+  const resolveAdaptationDecision = async (
+    decision: StudioAdaptationDecision,
+    outcome: 'accepted' | 'edited' | 'rejected',
+  ) => {
+    if (!selectedAdaptation) return;
+    const reason = decisionResolutionDrafts[decision.id]?.resolutionReason ?? '';
+    if (!reason.trim()) return;
+    setResolvingDecisionId(decision.id);
+    setAdaptationDecisionError(null);
+    try {
+      const response = await studioClient.resolveAdaptationDecision({
+        params: { adaptationId: selectedAdaptation.id, decisionId: decision.id },
+        body: { outcome, resolutionReason: reason.trim() },
+      });
+      if (response.status === 200) {
+        setAdaptationDecisions((current) =>
+          current.map((item) => (item.id === decision.id ? response.body.data : item)),
+        );
+        setDecisionResolutionDrafts((current) => {
+          if (!current[decision.id]) return current;
+          const next = { ...current };
+          delete next[decision.id];
+          return next;
+        });
+      } else setAdaptationDecisionError('取舍处理失败。');
+    } catch {
+      setAdaptationDecisionError('取舍处理失败。');
+    } finally {
+      setResolvingDecisionId(null);
+    }
+  };
+
+  const startScenePlanning = async () => {
+    if (!selectedAdaptation) return;
+    setIsStartingScenePlanning(true);
+    setAdaptationDecisionError(null);
+    try {
+      const response = await studioClient.startScenePlanning({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        setAdaptations((current) =>
+          current.map((item) => (item.id === response.body.data.id ? response.body.data : item)),
+        );
+      } else setAdaptationDecisionError('仍有高影响取舍未处理，请先逐条裁决。');
+    } catch {
+      setAdaptationDecisionError('进入场景计划失败，请稍后重试。');
+    } finally {
+      setIsStartingScenePlanning(false);
+    }
+  };
+
+  const saveScenePlan = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedAdaptation) return;
+    if (!scenePlanDraft.title.trim() || !scenePlanDraft.synopsis.trim()) return;
+    setIsSavingScenePlan(true);
+    setScenePlanError(null);
+    try {
+      const response = await studioClient.saveScenePlan({
+        params: {
+          adaptationId: selectedAdaptation.id,
+          episodeNumber: scenePlanDraft.episodeNumber,
+        },
+        body: {
+          title: scenePlanDraft.title.trim(),
+          synopsis: scenePlanDraft.synopsis.trim(),
+          sceneOutline: [],
+        },
+      });
+      if (response.status === 200) {
+        setScenePlans((current) => {
+          const others = current.filter(
+            (plan) => plan.episodeNumber !== response.body.data.episodeNumber,
+          );
+          return [...others, response.body.data].sort((a, b) => a.episodeNumber - b.episodeNumber);
+        });
+        setScenePlanDraft((current) => ({
+          episodeNumber: current.episodeNumber + 1,
+          title: '',
+          synopsis: '',
+        }));
+      } else setScenePlanError('场景计划保存失败。');
+    } catch {
+      setScenePlanError('场景计划保存失败。');
+    } finally {
+      setIsSavingScenePlan(false);
+    }
+  };
+
+  const confirmScenePlan = async (episodeNumber: number) => {
+    if (!selectedAdaptation) return;
+    setConfirmingScenePlanEpisode(episodeNumber);
+    setScenePlanError(null);
+    try {
+      const response = await studioClient.confirmScenePlan({
+        params: { adaptationId: selectedAdaptation.id, episodeNumber },
+        body: {},
+      });
+      if (response.status === 200) {
+        setScenePlans((current) =>
+          current.map((plan) =>
+            plan.episodeNumber === response.body.data.episodeNumber ? response.body.data : plan,
+          ),
+        );
+      } else setScenePlanError('场景计划确认失败，请先复核上游取舍变更。');
+    } catch {
+      setScenePlanError('场景计划确认失败。');
+    } finally {
+      setConfirmingScenePlanEpisode(null);
     }
   };
 
@@ -1884,9 +2156,7 @@ export function StudioWorkbench() {
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <Badge variant="outline">
-                                      {adaptation.status === 'brief_draft'
-                                        ? '简报草稿'
-                                        : '待蓝图审阅'}
+                                      {adaptationStatusLabel[adaptation.status]}
                                     </Badge>
                                     <Button
                                       type="button"
@@ -1902,6 +2172,423 @@ export function StudioWorkbench() {
                                 </li>
                               ))}
                             </ul>
+                          )}
+                          {selectedAdaptation?.status === 'blueprint_review' && (
+                            <div
+                              id="adaptation-decisions"
+                              className="grid gap-4 border-t pt-5"
+                              aria-labelledby="adaptation-decisions-heading"
+                            >
+                              <div>
+                                <p id="adaptation-decisions-heading" className="text-sm font-semibold">
+                                  改编取舍
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                  每条取舍都锚定一个不可变来源章节；高影响取舍在进入场景计划前需要逐条处理。
+                                </p>
+                              </div>
+                              <form
+                                className="grid gap-3 rounded-md border p-3"
+                                onSubmit={createAdaptationDecision}
+                              >
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="decision-chapter">来源章节</Label>
+                                    <Select
+                                      value={decisionForm.sourceChapterId}
+                                      onValueChange={(value) =>
+                                        setDecisionForm((current) => ({
+                                          ...current,
+                                          sourceChapterId: value,
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger id="decision-chapter" className="w-full">
+                                        <SelectValue placeholder="选择来源章节" />
+                                      </SelectTrigger>
+                                      <SelectContent position="popper">
+                                        {adaptationSourceChapters.map((chapter) => (
+                                          <SelectItem key={chapter.id} value={chapter.id}>
+                                            第 {chapter.chapterNumber} 章 · {chapter.title}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="decision-type">取舍类型</Label>
+                                    <Select
+                                      value={decisionForm.type}
+                                      onValueChange={(value) =>
+                                        setDecisionForm((current) => ({
+                                          ...current,
+                                          type: value as CreateStudioAdaptationDecision['type'],
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger id="decision-type" className="w-full">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent position="popper">
+                                        <SelectItem value="cut">删减</SelectItem>
+                                        <SelectItem value="merge">合并</SelectItem>
+                                        <SelectItem value="reorder">重排</SelectItem>
+                                        <SelectItem value="pov_change">视角变更</SelectItem>
+                                        <SelectItem value="expand">扩写</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="decision-impact">影响等级</Label>
+                                    <Select
+                                      value={decisionForm.impact}
+                                      onValueChange={(value) =>
+                                        setDecisionForm((current) => ({
+                                          ...current,
+                                          impact: value as CreateStudioAdaptationDecision['impact'],
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger id="decision-impact" className="w-full">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent position="popper">
+                                        <SelectItem value="low">低</SelectItem>
+                                        <SelectItem value="medium">中</SelectItem>
+                                        <SelectItem value="high">高</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                                <div className="grid gap-1.5">
+                                  <Label htmlFor="decision-proposal">取舍提议</Label>
+                                  <Input
+                                    id="decision-proposal"
+                                    value={decisionForm.proposal}
+                                    onChange={(event) =>
+                                      setDecisionForm((current) => ({
+                                        ...current,
+                                        proposal: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={10000}
+                                    placeholder="例如：合并第 2、3 章两位配角的同一线索。"
+                                  />
+                                </div>
+                                <div className="grid gap-1.5">
+                                  <Label htmlFor="decision-rationale">理由</Label>
+                                  <Input
+                                    id="decision-rationale"
+                                    value={decisionForm.rationale}
+                                    onChange={(event) =>
+                                      setDecisionForm((current) => ({
+                                        ...current,
+                                        rationale: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={10000}
+                                    placeholder="说明该取舍对改编的必要性。"
+                                  />
+                                </div>
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      isCreatingAdaptationDecision ||
+                                      adaptationSourceChapters.length === 0 ||
+                                      !decisionForm.sourceChapterId ||
+                                      !decisionForm.proposal.trim() ||
+                                      !decisionForm.rationale.trim()
+                                    }
+                                  >
+                                    {isCreatingAdaptationDecision ? (
+                                      <LoaderCircle className="animate-spin" />
+                                    ) : (
+                                      <Plus />
+                                    )}
+                                    记录取舍
+                                  </Button>
+                                </div>
+                              </form>
+                              {adaptationDecisionError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {adaptationDecisionError}
+                                </p>
+                              )}
+                              {isLoadingAdaptationDecisions && <Skeleton className="h-16 w-full" />}
+                              {!isLoadingAdaptationDecisions && adaptationDecisions.length === 0 && (
+                                <p className="text-sm text-muted-foreground">
+                                  还没有记录取舍。完成取舍后即可推进到场景计划。
+                                </p>
+                              )}
+                              <ul className="grid gap-2">
+                                {adaptationDecisions.map((decision) => (
+                                  <li
+                                    key={decision.id}
+                                    className="grid gap-2 border-l-2 border-primary/50 pl-3 text-sm"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge
+                                        variant={
+                                          decision.impact === 'high' ? 'destructive' : 'outline'
+                                        }
+                                      >
+                                        {adaptationDecisionTypeLabel[decision.type]} ·{' '}
+                                        {adaptationDecisionImpactLabel[decision.impact]}
+                                      </Badge>
+                                      <Badge variant="outline">
+                                        {adaptationDecisionStatusLabel[decision.status]}
+                                      </Badge>
+                                      <span className="text-xs text-muted-foreground">
+                                        来源 第 {decision.sourceChapter.chapterNumber} 章 ·{' '}
+                                        {decision.sourceChapter.title}
+                                      </span>
+                                    </div>
+                                    <p className="whitespace-pre-wrap">{decision.proposal}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      理由：{decision.rationale}
+                                    </p>
+                                    {decision.status === 'proposed' && (
+                                      <>
+                                        <Input
+                                          aria-label={`取舍处理理由 ${decision.id}`}
+                                          value={
+                                            decisionResolutionDrafts[decision.id]?.resolutionReason ??
+                                            ''
+                                          }
+                                          maxLength={10000}
+                                          onChange={(event) =>
+                                            setDecisionResolutionDrafts((current) => ({
+                                              ...current,
+                                              [decision.id]: { resolutionReason: event.target.value },
+                                            }))
+                                          }
+                                          placeholder="填写处理理由"
+                                        />
+                                        <div className="flex flex-wrap gap-2">
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={
+                                              resolvingDecisionId === decision.id ||
+                                              !(
+                                                decisionResolutionDrafts[decision.id]?.resolutionReason ??
+                                                ''
+                                              ).trim()
+                                            }
+                                            onClick={() =>
+                                              void resolveAdaptationDecision(decision, 'accepted')
+                                            }
+                                          >
+                                            接受
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={
+                                              resolvingDecisionId === decision.id ||
+                                              !(
+                                                decisionResolutionDrafts[decision.id]?.resolutionReason ??
+                                                ''
+                                              ).trim()
+                                            }
+                                            onClick={() =>
+                                              void resolveAdaptationDecision(decision, 'edited')
+                                            }
+                                          >
+                                            调整后采用
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={
+                                              resolvingDecisionId === decision.id ||
+                                              !(
+                                                decisionResolutionDrafts[decision.id]?.resolutionReason ??
+                                                ''
+                                              ).trim()
+                                            }
+                                            onClick={() =>
+                                              void resolveAdaptationDecision(decision, 'rejected')
+                                            }
+                                          >
+                                            拒绝
+                                          </Button>
+                                        </div>
+                                      </>
+                                    )}
+                                    {decision.status !== 'proposed' &&
+                                      decision.resolutionReason && (
+                                        <p className="text-xs text-muted-foreground">
+                                          处理：{decision.resolutionReason}
+                                        </p>
+                                      )}
+                                  </li>
+                                ))}
+                              </ul>
+                              <div className="flex justify-end">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={isStartingScenePlanning}
+                                  onClick={() => void startScenePlanning()}
+                                >
+                                  {isStartingScenePlanning ? (
+                                    <LoaderCircle className="animate-spin" />
+                                  ) : (
+                                    <ArrowRight />
+                                  )}
+                                  进入场景计划
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                          {selectedAdaptation?.status === 'scene_planning' && (
+                            <div
+                              id="adaptation-scene-plans"
+                              className="grid gap-4 border-t pt-5"
+                              aria-labelledby="adaptation-scene-plans-heading"
+                            >
+                              <div>
+                                <p id="adaptation-scene-plans-heading" className="text-sm font-semibold">
+                                  场景计划
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                  按集规划标题与梗概；确认后即可作为逐场剧本生成的依据。后续取舍或来源变更会让对应集进入待复核。
+                                </p>
+                              </div>
+                              <form
+                                className="grid gap-3 rounded-md border p-3"
+                                onSubmit={saveScenePlan}
+                              >
+                                <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="scene-plan-episode">集数</Label>
+                                    <Input
+                                      id="scene-plan-episode"
+                                      type="number"
+                                      min={1}
+                                      max={100}
+                                      value={scenePlanDraft.episodeNumber}
+                                      onChange={(event) =>
+                                        setScenePlanDraft((current) => ({
+                                          ...current,
+                                          episodeNumber: Number(event.target.value),
+                                        }))
+                                      }
+                                      required
+                                    />
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="scene-plan-title">本集标题</Label>
+                                    <Input
+                                      id="scene-plan-title"
+                                      value={scenePlanDraft.title}
+                                      onChange={(event) =>
+                                        setScenePlanDraft((current) => ({
+                                          ...current,
+                                          title: event.target.value,
+                                        }))
+                                      }
+                                      maxLength={200}
+                                      placeholder="例如：雾港重逢"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="grid gap-1.5">
+                                  <Label htmlFor="scene-plan-synopsis">本集梗概</Label>
+                                  <Textarea
+                                    id="scene-plan-synopsis"
+                                    value={scenePlanDraft.synopsis}
+                                    onChange={(event) =>
+                                      setScenePlanDraft((current) => ({
+                                        ...current,
+                                        synopsis: event.target.value,
+                                      }))
+                                    }
+                                    className="min-h-20 resize-y"
+                                    maxLength={5000}
+                                    placeholder="概述本集起承转合与关键场景。"
+                                  />
+                                </div>
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      isSavingScenePlan ||
+                                      !scenePlanDraft.title.trim() ||
+                                      !scenePlanDraft.synopsis.trim()
+                                    }
+                                  >
+                                    {isSavingScenePlan ? <LoaderCircle className="animate-spin" /> : <Save />}
+                                    保存本集计划
+                                  </Button>
+                                </div>
+                              </form>
+                              {scenePlanError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {scenePlanError}
+                                </p>
+                              )}
+                              {isLoadingScenePlans && <Skeleton className="h-16 w-full" />}
+                              {!isLoadingScenePlans && scenePlans.length === 0 && (
+                                <p className="text-sm text-muted-foreground">
+                                  还没有场景计划。先按集保存标题与梗概。
+                                </p>
+                              )}
+                              <ul className="grid gap-2">
+                                {scenePlans.map((plan) => (
+                                  <li
+                                    key={plan.id}
+                                    className="grid gap-2 border-l-2 border-primary/50 pl-3 text-sm"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="font-medium">第 {plan.episodeNumber} 集</span>
+                                      <Badge variant={plan.confirmedAt ? 'outline' : 'secondary'}>
+                                        {plan.confirmedAt ? '已确认' : plan.needsReview ? '待复核' : '草稿'}
+                                      </Badge>
+                                      <span className="text-xs text-muted-foreground">
+                                        {plan.sceneOutline.length} 个场景
+                                      </span>
+                                    </div>
+                                    <p className="font-medium">{plan.title}</p>
+                                    <p className="whitespace-pre-wrap text-muted-foreground">
+                                      {plan.synopsis}
+                                    </p>
+                                    {plan.needsReview && (
+                                      <p className="text-xs text-destructive">
+                                        上游取舍或来源变更，请复核后再确认。
+                                      </p>
+                                    )}
+                                    {!plan.confirmedAt && !plan.needsReview && (
+                                      <div className="flex justify-end">
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          disabled={confirmingScenePlanEpisode === plan.episodeNumber}
+                                          onClick={() => void confirmScenePlan(plan.episodeNumber)}
+                                        >
+                                          {confirmingScenePlanEpisode === plan.episodeNumber ? (
+                                            <LoaderCircle className="animate-spin" />
+                                          ) : (
+                                            <Check />
+                                          )}
+                                          确认本集计划
+                                        </Button>
+                                      </div>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
                           )}
                         </section>
                       )}

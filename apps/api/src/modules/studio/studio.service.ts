@@ -26,6 +26,8 @@ import {
   StudioAdaptationSourceSnapshotService,
   StudioAdaptationSourceChapterService,
   StudioAdaptationDecisionService,
+  StudioScenePlanService,
+  StudioSourceSceneMappingService,
 } from '@app/db';
 import type {
   StudioBlueprint,
@@ -42,6 +44,9 @@ import type {
   StudioAdaptationSourceSnapshot,
   StudioAdaptationSourceChapter,
   StudioAdaptationDecision,
+  StudioScenePlan,
+  StudioSourceSceneMapping,
+  Prisma,
 } from '@prisma/client';
 import { CommonErrorCode } from '@repo/contracts/errors';
 import { StudioProjectImportPreviewDataSchema } from '@repo/contracts';
@@ -99,6 +104,19 @@ import type {
   StudioAdaptationProject as StudioAdaptationProjectResponse,
   StudioAdaptationListQuery,
   StudioAdaptationListResponse,
+  StudioAdaptationSourceChapter as StudioAdaptationSourceChapterResponse,
+  StudioAdaptationSourceChapterListQuery,
+  StudioAdaptationSourceChapterListResponse,
+  StudioScenePlan as StudioScenePlanResponse,
+  StudioScenePlanSceneOutline,
+  SaveStudioScenePlan,
+  StudioScenePlanListQuery,
+  StudioScenePlanListResponse,
+  StudioSourceSceneMapping as StudioSourceSceneMappingResponse,
+  CreateStudioSourceSceneMapping,
+  ResolveStudioSourceSceneMapping,
+  StudioSourceSceneMappingListQuery,
+  StudioSourceSceneMappingListResponse,
   CreateStudioAdaptationDecision,
   ResolveStudioAdaptationDecision,
   StudioAdaptationDecision as StudioAdaptationDecisionResponse,
@@ -168,6 +186,8 @@ export class StudioService {
     private readonly adaptationSourceSnapshotService: StudioAdaptationSourceSnapshotService,
     private readonly adaptationSourceChapterService: StudioAdaptationSourceChapterService,
     private readonly adaptationDecisionService: StudioAdaptationDecisionService,
+    private readonly scenePlanService: StudioScenePlanService,
+    private readonly sourceSceneMappingService: StudioSourceSceneMappingService,
     private readonly runService: StudioGenerationRunService,
     private readonly blueprintService: StudioBlueprintService,
     private readonly chapterPlanService: StudioChapterPlanService,
@@ -685,6 +705,259 @@ export class StudioService {
       { adaptationId, sourceChapterId: sourceChapter.id },
     );
     return this.toAdaptationDecision(updated, sourceChapter);
+  }
+
+  async listAdaptationSourceChapters(
+    userId: string,
+    adaptationId: string,
+    query: StudioAdaptationSourceChapterListQuery,
+  ): Promise<StudioAdaptationSourceChapterListResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const chapters = await this.adaptationSourceChapterService.list(
+      { snapshotId: snapshot.id },
+      { page: query.page, limit: query.limit, orderBy: { chapterNumber: 'asc' } },
+    );
+
+    return {
+      ...chapters,
+      list: chapters.list.map((chapter) => this.toAdaptationSourceChapter(chapter)),
+    };
+  }
+
+  async startScenePlanning(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'BLUEPRINT_REVIEW') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先完成改编简报与蓝图审阅，再进入场景计划。',
+      });
+    }
+    // PRD P13: unresolved high-impact decisions block scene confirmation.
+    // We gate the transition itself so authors cannot plan scenes on top of
+    // undecided major cuts/merges.
+    const unresolvedHighImpact = await this.adaptationDecisionService.count({
+      adaptationId,
+      impact: 'HIGH',
+      status: 'PROPOSED',
+    });
+    if (unresolvedHighImpact > 0) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '仍有高影响取舍未处理，请先在改编蓝图中逐条裁决。',
+      });
+    }
+    const updated = await this.adaptationProjectService.update(
+      { id: adaptationId },
+      { status: 'SCENE_PLANNING' },
+    );
+    await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
+      status: 'scene_planning',
+    });
+    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptationId));
+  }
+
+  async listScenePlans(
+    userId: string,
+    adaptationId: string,
+    query: StudioScenePlanListQuery,
+  ): Promise<StudioScenePlanListResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const plans = await this.scenePlanService.list(
+      { adaptationId },
+      { page: query.page, limit: query.limit, orderBy: { episodeNumber: 'asc' } },
+    );
+    return {
+      ...plans,
+      list: plans.list.map((plan) => this.toScenePlan(plan)),
+    };
+  }
+
+  async saveScenePlan(
+    userId: string,
+    adaptationId: string,
+    episodeNumber: number,
+    input: SaveStudioScenePlan,
+  ): Promise<StudioScenePlanResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'SCENE_PLANNING') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入场景计划阶段，再编辑场景表。',
+      });
+    }
+    const sceneOutline = input.sceneOutline as unknown as Prisma.InputJsonValue;
+    const existing = await this.scenePlanService.get({ adaptationId, episodeNumber });
+    if (existing) {
+      // Editing a confirmed plan reopens it: clear confirmation and any stale
+      // needs-review flag so the author re-confirms the new outline.
+      const updated = await this.scenePlanService.update(
+        { id: existing.id },
+        {
+          title: input.title,
+          synopsis: input.synopsis,
+          sceneOutline,
+          needsReview: false,
+          confirmedAt: null,
+        },
+      );
+      return this.toScenePlan(updated);
+    }
+    const created = await this.scenePlanService.create({
+      adaptation: { connect: { id: adaptationId } },
+      episodeNumber,
+      title: input.title,
+      synopsis: input.synopsis,
+      sceneOutline,
+    });
+    await this.auditLogService.logCreate('studio.scene_plan', created.id, userId, {
+      adaptationId,
+      episodeNumber,
+    });
+    return this.toScenePlan(created);
+  }
+
+  async confirmScenePlan(
+    userId: string,
+    adaptationId: string,
+    episodeNumber: number,
+  ): Promise<StudioScenePlanResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'SCENE_PLANNING') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入场景计划阶段，再确认场景表。',
+      });
+    }
+    const plan = await this.scenePlanService.get({ adaptationId, episodeNumber });
+    if (!plan) {
+      throw apiError(CommonErrorCode.NotFound, { message: '场景计划不存在。' });
+    }
+    if (plan.needsReview) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该场景计划因上游取舍或来源变更需先复核，暂不可确认。',
+      });
+    }
+    const updated = await this.scenePlanService.update(
+      { id: plan.id },
+      { confirmedAt: new Date() },
+    );
+    return this.toScenePlan(updated);
+  }
+
+  async listSourceSceneMappings(
+    userId: string,
+    adaptationId: string,
+    query: StudioSourceSceneMappingListQuery,
+  ): Promise<StudioSourceSceneMappingListResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const where: Prisma.StudioSourceSceneMappingWhereInput = { adaptationId };
+    if (query.episodeNumber) where.episodeNumber = query.episodeNumber;
+    const mappings = await this.sourceSceneMappingService.list(
+      where,
+      { page: query.page, limit: query.limit, orderBy: { createdAt: 'desc' } },
+    );
+    const chapters = await Promise.all(
+      mappings.list.map((mapping) =>
+        this.adaptationSourceChapterService.getById(mapping.sourceChapterId),
+      ),
+    );
+
+    return {
+      ...mappings,
+      list: mappings.list.map((mapping, index) => {
+        const chapter = chapters[index];
+        if (!chapter) {
+          throw apiError(CommonErrorCode.InternalServerError, {
+            message: '改编来源章节缺失，请联系支持人员。',
+          });
+        }
+        return this.toSourceSceneMapping(mapping, chapter);
+      }),
+    };
+  }
+
+  async createSourceSceneMapping(
+    userId: string,
+    adaptationId: string,
+    input: CreateStudioSourceSceneMapping,
+  ): Promise<StudioSourceSceneMappingResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status === 'BRIEF_DRAFT' || adaptation.status === 'BLUEPRINT_REVIEW') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入场景计划阶段，再建立场景溯源。',
+      });
+    }
+    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const sourceChapter = await this.adaptationSourceChapterService.getById(input.sourceChapterId);
+    if (!sourceChapter || sourceChapter.snapshotId !== snapshot.id) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '场景溯源必须锚定当前改编来源快照中的章节。',
+      });
+    }
+    const scenePlan = await this.scenePlanService.get({
+      adaptationId,
+      episodeNumber: input.episodeNumber,
+    });
+    if (!scenePlan) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集场景计划不存在，请先保存本集计划。',
+      });
+    }
+    const outline = (scenePlan.sceneOutline ?? []) as StudioScenePlanSceneOutline;
+    const sceneExists = outline.some((scene) => scene.sceneNumber === input.sceneNumber);
+    if (!sceneExists) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集不存在此场景编号，请核对场景表后再建立溯源。',
+      });
+    }
+    const mapping = await this.sourceSceneMappingService.create({
+      adaptation: { connect: { id: adaptationId } },
+      scenePlan: { connect: { id: scenePlan.id } },
+      episodeNumber: input.episodeNumber,
+      sceneNumber: input.sceneNumber,
+      sourceChapter: { connect: { id: sourceChapter.id } },
+      evidenceAnchor: input.evidenceAnchor ?? null,
+      status: 'PROPOSED',
+    });
+    await this.auditLogService.logCreate('studio.source_scene_mapping', mapping.id, userId, {
+      adaptationId,
+      scenePlanId: scenePlan.id,
+      episodeNumber: input.episodeNumber,
+      sceneNumber: input.sceneNumber,
+      sourceChapterId: sourceChapter.id,
+    });
+    return this.toSourceSceneMapping(mapping, sourceChapter);
+  }
+
+  async resolveSourceSceneMapping(
+    userId: string,
+    adaptationId: string,
+    mappingId: string,
+    input: ResolveStudioSourceSceneMapping,
+  ): Promise<StudioSourceSceneMappingResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const mapping = await this.sourceSceneMappingService.getById(mappingId);
+    if (!mapping || mapping.adaptationId !== adaptationId) {
+      throw apiError(CommonErrorCode.NotFound, { message: '场景溯源不存在。' });
+    }
+    const sourceChapter = await this.adaptationSourceChapterService.getById(mapping.sourceChapterId);
+    if (!sourceChapter) {
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '改编来源章节缺失，请联系支持人员。',
+      });
+    }
+    const updated = await this.sourceSceneMappingService.update(
+      { id: mappingId },
+      { status: input.status.toUpperCase() as 'CONFIRMED' | 'STALE' },
+    );
+    await this.auditLogService.logUpdate(
+      'studio.source_scene_mapping',
+      mappingId,
+      userId,
+      { status: input.status },
+      { adaptationId, sourceChapterId: sourceChapter.id },
+    );
+    return this.toSourceSceneMapping(updated, sourceChapter);
   }
 
   async previewProjectImport(
@@ -2964,6 +3237,64 @@ export class StudioService {
       resolvedAt: decision.resolvedAt?.toISOString() ?? null,
       createdAt: decision.createdAt.toISOString(),
       updatedAt: decision.updatedAt.toISOString(),
+    };
+  }
+
+  private toAdaptationSourceChapter(
+    chapter: StudioAdaptationSourceChapter,
+  ): StudioAdaptationSourceChapterResponse {
+    return {
+      id: chapter.id,
+      snapshotId: chapter.snapshotId,
+      sourceRevisionId: chapter.sourceRevisionId,
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      content: chapter.content,
+      contentHash: chapter.contentHash,
+      wordCount: chapter.wordCount,
+      createdAt: chapter.createdAt.toISOString(),
+    };
+  }
+
+  private toScenePlan(plan: StudioScenePlan): StudioScenePlanResponse {
+    return {
+      id: plan.id,
+      adaptationId: plan.adaptationId,
+      episodeNumber: plan.episodeNumber,
+      title: plan.title,
+      synopsis: plan.synopsis,
+      sceneOutline: (plan.sceneOutline ?? []) as StudioScenePlanSceneOutline,
+      needsReview: plan.needsReview,
+      confirmedAt: plan.confirmedAt?.toISOString() ?? null,
+      createdAt: plan.createdAt.toISOString(),
+      updatedAt: plan.updatedAt.toISOString(),
+    };
+  }
+
+  private toSourceSceneMapping(
+    mapping: StudioSourceSceneMapping,
+    sourceChapter: StudioAdaptationSourceChapter,
+  ): StudioSourceSceneMappingResponse {
+    const status = {
+      PROPOSED: 'proposed',
+      CONFIRMED: 'confirmed',
+      STALE: 'stale',
+    } as const;
+    return {
+      id: mapping.id,
+      adaptationId: mapping.adaptationId,
+      scenePlanId: mapping.scenePlanId,
+      episodeNumber: mapping.episodeNumber,
+      sceneNumber: mapping.sceneNumber,
+      sourceChapter: {
+        id: sourceChapter.id,
+        chapterNumber: sourceChapter.chapterNumber,
+        title: sourceChapter.title,
+      },
+      evidenceAnchor: mapping.evidenceAnchor,
+      status: status[mapping.status],
+      createdAt: mapping.createdAt.toISOString(),
+      updatedAt: mapping.updatedAt.toISOString(),
     };
   }
 

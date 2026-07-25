@@ -5,6 +5,7 @@ import {
   CreateStudioAdaptationDecisionSchema,
   ResolveStudioAdaptationDecisionSchema,
   UpdateStudioAdaptationBriefSchema,
+  StudioAdaptationSourceChapterListResponseSchema,
   GenerationJobSchema,
   ResolveStudioReviewFindingSchema,
   StudioProjectExportQuerySchema,
@@ -120,6 +121,36 @@ describe('studio schemas', () => {
       ResolveStudioAdaptationDecisionSchema.safeParse({
         outcome: 'accepted',
         resolutionReason: '',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('paginates immutable source chapters captured for an adaptation', () => {
+    const chapter = {
+      id: 'c2fe573d-e9e0-423e-9319-4f6fc375e75d',
+      snapshotId: '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7',
+      sourceRevisionId: '8a1f5e2c-7b3a-4d9e-b6c1-2f4a8d9e0b3a',
+      chapterNumber: 1,
+      title: '迟到的信件',
+      content: '雨声先于信件抵达。',
+      contentHash: 'a'.repeat(64),
+      wordCount: 8,
+      createdAt: '2026-07-24T02:00:00.000Z',
+    };
+    expect(
+      StudioAdaptationSourceChapterListResponseSchema.safeParse({
+        list: [chapter],
+        total: 1,
+        page: 1,
+        limit: 20,
+      }).success,
+    ).toBe(true);
+    expect(
+      StudioAdaptationSourceChapterListResponseSchema.safeParse({
+        list: [{ ...chapter, chapterNumber: 0 }],
+        total: 1,
+        page: 1,
+        limit: 20,
       }).success,
     ).toBe(false);
   });

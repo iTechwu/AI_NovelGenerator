@@ -2,6 +2,7 @@
 
 const net = require('node:net');
 const path = require('node:path');
+const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
@@ -25,8 +26,52 @@ const localDefaults = {
   CRYPTO_IV: 'local-dev-crypto-iv',
   ENCRYPTION_KEY: 'local-dev-encryption-key-change-before-production',
 };
+
+/**
+ * Minimal .env parser (no external dependency). Reads KEY=VALUE lines,
+ * ignoring blank lines / comments and stripping surrounding quotes.
+ * Returns {} when the file is missing or unreadable.
+ */
+function loadEnvFile(filePath) {
+  const env = {};
+  let content;
+  try {
+    content = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return env;
+  }
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key) env[key] = value;
+  }
+  return env;
+}
+
+// Forward runtime-relevant vars from backend/.env to the Python runtime, and
+// make NOVEL_RUNTIME_* visible to the API as well. Placed BEFORE ...process.env
+// so a real shell/exported env var still takes precedence over the file.
+const RUNTIME_ENV_KEY = /^(LLM_|NOVEL_RUNTIME_)/;
+const runtimeEnvFromDotenv = {};
+for (const [key, value] of Object.entries(loadEnvFile(path.join(root, 'backend', '.env')))) {
+  if (RUNTIME_ENV_KEY.test(key) || key === 'PROJECT_STORAGE_ROOT') {
+    runtimeEnvFromDotenv[key] = value;
+  }
+}
+
 const commonEnv = {
   ...localDefaults,
+  ...runtimeEnvFromDotenv,
   ...process.env,
   NOVEL_RUNTIME_BASE_URL: process.env.NOVEL_RUNTIME_BASE_URL || 'http://127.0.0.1:18080',
   NOVEL_RUNTIME_SHARED_SECRET: runtimeSecret,

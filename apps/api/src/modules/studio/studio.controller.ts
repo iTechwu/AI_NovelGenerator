@@ -118,6 +118,22 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.listAdaptationSourceChapters)
+  async listAdaptationSourceChapters(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listAdaptationSourceChapters, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listAdaptationSourceChapters(
+          request.userId,
+          params.adaptationId,
+          query,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.listAdaptationDecisions)
   async listAdaptationDecisions(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.listAdaptationDecisions, async ({ params, query }) => ({
@@ -161,6 +177,116 @@ export class StudioController {
           request.userId,
           params.adaptationId,
           params.decisionId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.startScenePlanning)
+  async startScenePlanning(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.startScenePlanning, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.startScenePlanning(request.userId, params.adaptationId),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listScenePlans)
+  async listScenePlans(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listScenePlans, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listScenePlans(
+          request.userId,
+          params.adaptationId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.saveScenePlan)
+  async saveScenePlan(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.saveScenePlan, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.saveScenePlan(
+          request.userId,
+          params.adaptationId,
+          params.episodeNumber,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.confirmScenePlan)
+  async confirmScenePlan(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.confirmScenePlan, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.confirmScenePlan(
+          request.userId,
+          params.adaptationId,
+          params.episodeNumber,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listSourceSceneMappings)
+  async listSourceSceneMappings(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listSourceSceneMappings, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listSourceSceneMappings(
+          request.userId,
+          params.adaptationId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.createSourceSceneMapping)
+  async createSourceSceneMapping(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createSourceSceneMapping, async ({ params, body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.createSourceSceneMapping(
+          request.userId,
+          params.adaptationId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.resolveSourceSceneMapping)
+  async resolveSourceSceneMapping(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.resolveSourceSceneMapping, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.resolveSourceSceneMapping(
+          request.userId,
+          params.adaptationId,
+          params.mappingId,
           body,
         ),
       },

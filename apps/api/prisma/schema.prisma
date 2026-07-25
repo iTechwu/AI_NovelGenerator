@@ -361,6 +361,17 @@ enum StudioAdaptationDecisionStatus {
   @@map("studio_adaptation_decision_status")
 }
 
+// Source-scene mappings trace a planned scene back to the immutable source
+// chapter(s) it adapts. `stale` is set when the source snapshot or an upstream
+// decision changes, so the author must re-confirm the link (PRD P13 traceability).
+enum StudioSourceMappingStatus {
+  PROPOSED  @map("proposed")
+  CONFIRMED @map("confirmed")
+  STALE     @map("stale")
+
+  @@map("studio_source_mapping_status")
+}
+
 enum StudioFinalizationTaskStatus {
   PENDING   @map("pending")
   COMPLETED @map("completed")
@@ -516,6 +527,8 @@ model StudioAdaptationProject {
   sourceProject  StudioProject                   @relation("StudioAdaptationSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
   sourceSnapshot StudioAdaptationSourceSnapshot?
   decisions      StudioAdaptationDecision[]
+  scenePlans     StudioScenePlan[]
+  sourceMappings StudioSourceSceneMapping[]
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([sourceProjectId, createdAt(sort: Desc)])
@@ -556,6 +569,7 @@ model StudioAdaptationSourceChapter {
   snapshot       StudioAdaptationSourceSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   sourceRevision StudioChapterRevision          @relation(fields: [sourceRevisionId], references: [id], onDelete: Restrict)
   decisions      StudioAdaptationDecision[]
+  sourceMappings StudioSourceSceneMapping[]
 
   @@unique([snapshotId, chapterNumber])
   @@index([sourceRevisionId])
@@ -584,6 +598,55 @@ model StudioAdaptationDecision {
   @@index([adaptationId, status, createdAt(sort: Desc)])
   @@index([sourceChapterId])
   @@map("studio_adaptation_decisions")
+}
+
+// Per-episode scene plan authored during the scene_planning stage. Each scene
+// may anchor to one or more immutable source chapters so downstream screenplay
+// generation and source-scene mapping stay traceable. `needsReview` is set when
+// upstream decisions or the source snapshot change, blocking scene confirmation.
+model StudioScenePlan {
+  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId  String   @map("adaptation_id") @db.Uuid
+  episodeNumber Int      @map("episode_number") @db.SmallInt
+  title         String   @db.VarChar(200)
+  synopsis      String   @db.Text
+  sceneOutline  Json
+  needsReview   Boolean  @default(false) @map("needs_review")
+  confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  adaptation StudioAdaptationProject @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
+  sourceMappings StudioSourceSceneMapping[]
+
+  @@unique([adaptationId, episodeNumber])
+  @@index([adaptationId, episodeNumber])
+  @@map("studio_scene_plans")
+}
+
+// Normalized, reviewable traceability link between a planned scene and the
+// immutable source chapter it adapts. Complements the `sourceChapterIds` hint
+// stored inside `StudioScenePlan.sceneOutline` with a queryable, status-bearing
+// record that survives outline edits and can be marked stale for re-review.
+model StudioSourceSceneMapping {
+  id              String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId    String                    @map("adaptation_id") @db.Uuid
+  scenePlanId     String                    @map("scene_plan_id") @db.Uuid
+  episodeNumber   Int                       @map("episode_number") @db.SmallInt
+  sceneNumber     Int                       @map("scene_number") @db.SmallInt
+  sourceChapterId String                    @map("source_chapter_id") @db.Uuid
+  evidenceAnchor  String?                   @map("evidence_anchor") @db.Text
+  status          StudioSourceMappingStatus @default(PROPOSED)
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  adaptation    StudioAdaptationProject       @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
+  scenePlan     StudioScenePlan               @relation(fields: [scenePlanId], references: [id], onDelete: Restrict)
+  sourceChapter StudioAdaptationSourceChapter @relation(fields: [sourceChapterId], references: [id], onDelete: Restrict)
+
+  @@unique([scenePlanId, sceneNumber, sourceChapterId])
+  @@index([adaptationId, status, createdAt(sort: Desc)])
+  @@map("studio_source_scene_mappings")
 }
 
 model StudioGenerationRun {

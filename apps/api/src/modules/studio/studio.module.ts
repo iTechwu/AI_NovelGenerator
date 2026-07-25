@@ -21,6 +21,8 @@ import {
   StudioAdaptationSourceSnapshotModule,
   StudioAdaptationSourceChapterModule,
   StudioAdaptationDecisionModule,
+  StudioScenePlanModule,
+  StudioSourceSceneMappingModule,
 } from '@app/db';
 import { NovelRuntimeClientModule } from '../../clients/novel-runtime/novel-runtime-client.module';
 import { AuditLogModule } from '@app/audit-log';
@@ -40,6 +42,8 @@ import { StudioService } from './studio.service';
     StudioAdaptationSourceSnapshotModule,
     StudioAdaptationSourceChapterModule,
     StudioAdaptationDecisionModule,
+    StudioScenePlanModule,
+    StudioSourceSceneMappingModule,
     StudioGenerationRunModule,
     StudioBlueprintModule,
     StudioChapterPlanModule,

@@ -316,3 +316,47 @@ P0-01 正文修订
 - 已实施（简报状态机，2026-07-25）：草稿简报可更新目标形态、集数、时长、受众、改编目标和保留项；仅在受众非空、改编目标至少 20 字且保留项非空时允许确认。确认后状态由 `brief_draft` 转为 `blueprint_review` 并锁定直接编辑，所有保存与确认均记录审计日志。
 - 已实施（取舍领域基础，2026-07-25）：新增 `StudioAdaptationDecision` 只追加模型和增量迁移。`GET/POST /studio/adaptations/:adaptationId/decisions` 仅对本人已进入 `blueprint_review` 的改编项目可创建或读取；每条取舍强制关联该项目不可变来源快照内的单个章节，记录类型、影响等级、提议和理由。`POST .../:decisionId/resolve` 仅允许一次性将待处理项裁决为接受、编辑或拒绝，保留处理理由、时间与审计记录。
 - 待实施（M1 后续）：改编蓝图的 P13 取舍审阅界面、场景计划看板、原作-场景映射、逐场剧本生成运行时、差异审阅、来源更新复核、剧本导出与 P12 独立编辑工作台。当前小说工作台中的简报区仅为 M1 过渡入口，不应被误标为完整 P13 三栏工作台；新增决策迁移须在对应环境执行后才可启用 API。
+
+### C54 实施与复核：改编来源章节只读 API
+
+- 已实施（契约，2026-07-25）：新增独立 `StudioAdaptationSourceChapterSchema`（id、snapshotId、sourceRevisionId、chapterNumber、title、content、contentHash、wordCount、createdAt）与 `StudioAdaptationSourceChapterListQuery/Response` 分页类型。此前来源章节仅作为取舍响应内的嵌套对象存在，无法被场景计划、原作-场景映射等下游阶段独立读取。
+- 已实施（API，2026-07-25）：新增 `GET /studio/adaptations/:adaptationId/source-chapters`。服务层经 `getOwnedAdaptation` 所有权校验与 `getAdaptationSnapshot` 取得快照后，按 `chapterNumber asc` 分页返回不可变来源章节，确保前端不再各自直读原作、也不依赖可能被继续编辑的原作正文。
+- 已实施（验证）：契约 studio 测试 9 项（+1，覆盖合法分页与非法章节号拒绝）、`apps/api` studio 服务测试 46 项（+1，覆盖所有权快照过滤与按章升序映射）、API `tsconfig.type-check.json` 类型检查通过。
+- 待实施：来源章节尚无前端消费（属 C55 取舍审阅界面）；场景计划、原作-场景映射、逐场剧本生成仍属改编管线后续工作台待办。本轮不引入新 Prisma 迁移，沿用既有 `StudioAdaptationSourceChapter` 模型与生成式 DB service。
+
+### C55 实施与复核：改编取舍审阅界面（P13 取舍）
+
+- 已实施（Web，2026-07-25）：工作台在改编项目进入 `blueprint_review` 后加载并展示“改编取舍”面板：调用 C54 的 `listAdaptationSourceChapters` 取得不可变来源章节作为锚点下拉，调用 `listAdaptationDecisions` 列出取舍，并提供记录表单（来源章节、类型、影响、提议、理由）与逐条裁决（接受 / 调整后采用 / 拒绝 + 处理理由）。此前后端取舍 API 完整但无前端消费。
+- 已实施（输入隔离）：裁决草稿按取舍 ID 独立保存，沿用 C12 的逐项隔离原则；三个裁决按钮在缺少处理理由时禁用，避免共享草稿造成的误提交；作品库改编徽章扩展为六态全量标签（简报草稿 / 待蓝图审阅 / 场景计划中 / 剧本生成中 / 待对照审阅 / 可交付）。
+- 已通过：Web studio 测试 18 项（+1，覆盖确认简报后加载取舍、按来源章锚定、逐条裁决写回）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：取舍仍依赖工作台内的过渡面板，P12/P13 独立三栏工作台、场景计划看板、原作-场景映射、逐场剧本生成与剧本导出仍属改编管线后续。本轮不引入新迁移。
+
+### C56 实施与复核：场景计划模型与受控状态推进
+
+- 已实施（数据，2026-07-25）：新增只追加 `StudioScenePlan` 模型与迁移 `20260725180000_studio_scene_plans`：每集一行，含标题、梗概、`sceneOutline`（JSON 场景表，每个场景可锚定多个不可变来源章节并标注起承转合）、`needsReview`、`confirmedAt`；`(adaptationId, episodeNumber)` 唯一约束防止同集重复。`pnpm db:generate` 已生成对应 DB service 模块并注册入 StudioModule。
+- 已实施（契约/API，2026-07-25）：新增 `POST /adaptations/:adaptationId/scene-planning/start`（仅在 `BLUEPRINT_REVIEW` 且无未处理高影响取舍时推进至 `scene_planning`，落实 PRD“未解决高影响取舍阻止场景确认”）、`GET .../scene-plans`、`PUT .../scene-plans/:episodeNumber`（按集 upsert，编辑已确认计划会清除确认并重置 needsReview）、`POST .../scene-plans/:episodeNumber/confirm`（needsReview 时拒绝确认）。所有创建与状态推进均写入审计。
+- 已通过：契约 studio 测试 9 项、`apps/api` studio 测试 53 项（服务 49 + worker 4；+3，覆盖高影响阻断、状态推进、按集创建与确认）、API `tsconfig.type-check.json` 与 contracts `tsc --noEmit` 类型检查通过。
+- 待实施：场景计划尚无前端消费（属 C57）；逐场剧本生成运行时、原作-场景映射、剧本导出仍属改编管线后续。新增 `studio_scene_plans` 迁移须在隔离 PostgreSQL 演练后再部署，本地迁移文件不等同于已上线。
+
+### C57 实施与复核：场景计划工作台（P13 场景计划）
+
+- 已实施（Web，2026-07-25）：工作台在 `blueprint_review` 阶段提供“进入场景计划”入口（调用 `startScenePlanning`，失败时回显“仍有高影响取舍未处理”等服务端校验原因）；进入 `scene_planning` 后加载并展示“场景计划”面板：按集保存标题与梗概（`saveScenePlan`）、列出已保存计划（场景数、草稿/待复核/已确认徽章）、逐集确认（`confirmScenePlan`）。`needsReview` 计划会显示复核提示并隐藏确认按钮。
+- 已实施（状态投影）：`startScenePlanning` 成功后用返回的改编对象更新作品库状态，SSE/事件未覆盖时也能立即从取舍阶段切到场景计划阶段；集列表本地按 `episodeNumber` 升序合并去重。
+- 已通过：Web studio 测试 19 项（+1，覆盖进入场景计划、保存本集计划、逐集确认写回）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：场景表（sceneOutline）的逐场结构化编辑、原作-场景映射、逐场剧本生成运行时与剧本导出仍属改编管线后续，当前 UI 仅承载按集标题/梗概与确认。
+
+### C58 实施与复核：原作-场景溯源映射
+
+- 已实施（数据，2026-07-25）：新增只追加 `StudioSourceSceneMapping` 模型与 `StudioSourceMappingStatus` 枚举（proposed/confirmed/stale）及迁移 `20260725200000_studio_source_scene_mappings`：将某集某场景规范地锚定到一个不可变来源章节，附 `evidenceAnchor` 与状态；`(scenePlanId, sceneNumber, sourceChapterId)` 唯一约束防止重复锚定。`pnpm db:generate` 已生成 DB service 模块并注册入 StudioModule。
+- 已实施（契约/API，2026-07-25）：新增 `GET/POST /adaptations/:adaptationId/source-mappings` 与 `POST .../:mappingId/resolve`。创建时校验：所有权、改编已进入场景计划或之后阶段、来源章节属于当前快照、目标集场景计划存在且该 `sceneNumber` 真实存在于场景表（拒绝为未知场景编号产生无溯源映射）；裁决可将映射置为 `confirmed` 或 `stale` 并记录审计理由。这是 P13“原作-场景映射”与后续差异审阅/来源更新复核所需的可查询溯源骨架，区别于 `sceneOutline` 内的 `sourceChapterIds` 提示。
+- 已通过：契约 studio 测试 9 项、`apps/api` studio 测试 55 项（服务 51 + worker 4；+2，覆盖场景存在性校验与 confirmed/stale 裁决）、API `tsconfig.type-check.json` 与 contracts `tsc --noEmit` 类型检查通过。
+- 待实施：溯源映射尚无前端消费；逐场剧本生成运行时、来源更新自动标 stale、剧本导出与 P12 独立三栏工作台仍属改编管线后续。新增 `studio_source_scene_mappings` 迁移须在隔离 PostgreSQL 演练后再部署。
+
+### C59 复核结论：C54-C58 改编管线固定点验证与待实施项复核
+
+- 本轮按 PRD 第 38 章“小说转剧本”核心路径，沿 `来源章节只读 → 取舍审阅 → 场景计划模型/状态机 → 场景计划工作台 → 原作-场景溯源` 顺序补齐 5 个增量（C54-C58），将改编状态机从仅 `brief_draft/blueprint_review` 推进到 `scene_planning` 并建立可查询溯源骨架。所有写入走 Zod-first 契约、DB service 层与审计，未在 service 层直连 Prisma、未在 client 层之外直连外部服务。
+- 已通过：`apps/api` studio 测试 55 项（服务 51 + worker 4，较 C50 的 API 43 增长全部来自 C54/C56/C58 的契约与服务聚焦测试）、`apps/web` 测试 21 项（studio 19 + 其他 2，较 C50 的 Web 16 增长来自 C55/C57 的工作台测试）、`packages/contracts` 测试 56 项（4 套件）；`pnpm type-check` 6/6 通过；`git diff --check` 干净。
+- 已修复（测试卫生）：`packages/contracts/src/__tests__/contracts.test.ts` 的两份契约导出快照过期（SSO 移除把 `oidcAuthContract` 改名为 `authContract`、且新增 `fileContract`/`uploaderContract` 后未同步），本轮更新为当前 14 个真实导出，使该守卫测试由失败转绿。该修复仅使守卫与现状一致，未新增或删除任何契约。
+- 已通过质量门禁（与本轮相关）：`check:architecture`（无 `any`）、`check:list-contracts`（C54/C56/C58 新增的 source-chapters、scene-plans、source-mappings 分页端点均遵循 `PaginatedResponseSchema` 标准模式）、`check:sensitive-logs`、`check:utils-hygiene`、`check:cross-project-boundaries` 全部 PASS。
+- 仍待实施（非本轮代码可完成）：(1) 三份新增迁移（`studio_scene_plans`、`studio_source_scene_mappings` 及枚举）须先在隔离 PostgreSQL 演练再部署；(2) 逐场剧本生成运行时、来源更新自动标 stale、剧本导出（Fountain/txt）、差异审阅与 P12 独立三栏工作台仍属改编管线后续；(3) 独立页面路由与导航验收、真实作者可用性测试与 M1 准入数据采集需部署或用户研究环境。
+- 已知既存阻断（与本轮无关，未修改）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 文件报告 70 条连带错误；`backend/tests/test_runtime_api.py` 当前 8 项失败，源于工作区中既有的、非本轮 authored 的 `backend/runtime/engine.py` 多模型 `RuntimeSettings` 改动（新增 `model_architecture/model_outline/model_chapter_draft/model_consistency_review` 必填字段），属独立的 Python 运行时多模型改造工作流，C54-C58 的 TypeScript 改动不可能影响该结果，未在本轮触碰 `backend/`。
