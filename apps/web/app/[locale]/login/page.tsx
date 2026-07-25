@@ -1,124 +1,78 @@
 'use client';
 
-import { clearAll, getTokens, setLoginData } from '@/lib/storage';
-import { checkSsoSession } from '@/lib/sso-session';
-import { Button } from '@repo/ui';
-import { AlertCircle, Loader2 } from 'lucide-react';
-import { useLocale, useTranslations } from 'next-intl';
+import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { logger } from '@/lib/logger';
+import { Button } from '@repo/ui';
+import { Loader2 } from 'lucide-react';
+import { authClient } from '@/lib/api/contracts/client';
+import { setLoginData } from '@/lib/storage';
+import type { LoginSuccess } from '@repo/contracts';
 
-const LOCALES = ['zh-CN', 'en'] as const;
-
+/**
+ * 本地账号密码登录页（自建认证）。
+ * 不再重定向到 sso.dofe.ai；提交直接调用本地 authContract.loginByEmail。
+ */
 export default function LoginPage() {
-  const t = useTranslations('auth.login');
-  const searchParams = useSearchParams();
-  const locale = useLocale();
   const router = useRouter();
-  const hasRedirected = useRef(false);
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get('callbackUrl') || '/';
+
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const validateCallbackUrl = useCallback((url: string): boolean => {
-    if (!url.startsWith('/')) return false;
-    if (url.startsWith('//')) return false;
-    if (url.startsWith('/\\')) return false;
-    if (/^(\/[^/]*):/.test(url)) return false;
-    return true;
-  }, []);
-
-  const buildRedirectUrl = useCallback(
-    (path: string): string => {
-      let normalizedPath = path.startsWith('/') ? path : `/${path}`;
-
-      for (const loc of LOCALES) {
-        const prefix = `/${loc}`;
-        if (normalizedPath === prefix) {
-          normalizedPath = '/';
-          break;
-        }
-        if (normalizedPath.startsWith(`${prefix}/`)) {
-          normalizedPath = normalizedPath.slice(prefix.length);
-          break;
-        }
-      }
-
-      if (locale === 'zh-CN') {
-        return normalizedPath;
-      }
-      return `/${locale}${normalizedPath}`;
-    },
-    [locale],
-  );
-
-  const callbackUrl = useMemo(() => {
-    const rawCallbackUrl = searchParams.get('callbackUrl') || '/dashboard';
-    return validateCallbackUrl(rawCallbackUrl) ? rawCallbackUrl : '/dashboard';
-  }, [searchParams, validateCallbackUrl]);
-
-  const redirectToSso = useCallback(async () => {
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setError(null);
-    window.location.replace(
-      `/api/auth/oidc/authorize?redirect_uri=${encodeURIComponent(callbackUrl)}`,
-    );
-  }, [callbackUrl]);
-
-  useEffect(() => {
-    if (hasRedirected.current) return;
-    hasRedirected.current = true;
-
-    const tokens = getTokens();
-    if (tokens) {
-      router.replace(buildRedirectUrl(callbackUrl));
-      return;
-    }
-
-    clearAll();
-
-    (async () => {
-      try {
-        try {
-          const directSession = await checkSsoSession();
-          if (directSession) {
-            setLoginData(directSession);
-            router.replace(buildRedirectUrl(callbackUrl));
-            return;
-          }
-        } catch (sessionError) {
-          logger.warn('Direct SSO session check failed, trying iframe fallback', {
-            error: sessionError instanceof Error ? sessionError.message : String(sessionError),
-          });
-        }
-
-        await redirectToSso();
-      } catch (err) {
-        logger.warn('SSO login redirect failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        setError(t('redirectFailed'));
+    setLoading(true);
+    try {
+      const res = await authClient.loginByEmail({ body: { email, password } });
+      if (res.status === 200 && res.body?.data) {
+        setLoginData(res.body.data);
+        router.replace(callbackUrl);
+        router.refresh();
+      } else {
+        setError(res.body?.msg || '登录失败，请检查邮箱与密码');
       }
-    })();
-  }, [buildRedirectUrl, callbackUrl, redirectToSso, router, t]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登录失败，请稍后重试');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background p-6">
-      <div className="flex w-full max-w-sm flex-col items-center gap-4 text-center">
-        {error ? (
-          <>
-            <AlertCircle className="size-10 text-destructive" />
-            <div className="space-y-1">
-              <h1 className="text-lg font-semibold text-foreground">{t('redirectErrorTitle')}</h1>
-              <p className="text-sm text-muted-foreground text-pretty">{error}</p>
-            </div>
-            <Button onClick={redirectToSso}>{t('retrySsoLogin')}</Button>
-          </>
-        ) : (
-          <>
-            <Loader2 className="size-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">{t('redirectingToSso')}</p>
-          </>
-        )}
-      </div>
+      <form
+        onSubmit={onSubmit}
+        className="flex w-full max-w-sm flex-col gap-4 rounded-lg border p-6 shadow-sm"
+      >
+        <h1 className="text-center text-xl font-semibold text-foreground">登录</h1>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <input
+          type="email"
+          required
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="邮箱"
+          className="h-10 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+        />
+        <input
+          type="password"
+          required
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="密码"
+          className="h-10 w-full rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+        />
+        <Button type="submit" disabled={loading}>
+          {loading && <Loader2 className="mr-2 size-4 animate-spin" />}
+          登录
+        </Button>
+      </form>
     </div>
   );
 }

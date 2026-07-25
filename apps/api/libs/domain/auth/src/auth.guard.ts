@@ -1,25 +1,29 @@
 import { CanActivate, ExecutionContext, Inject, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
-import { SsoAuthClient } from '@dofe/infra-clients/sso';
+import { RedisService } from '@dofe/infra-redis';
 import { apiError } from '@dofe/infra-common';
 import { environmentUtil } from '@dofe/infra-utils';
-import { RedisService } from '@dofe/infra-redis';
 import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import type { Logger } from 'winston';
 import { CommonErrorCode } from '@repo/contracts/errors';
 import { MPTRAIL_HEADER, TOKEN_BLACKLIST_PREFIX } from '@repo/constants';
+import { UserInfoService } from '@app/db';
 import { AuthService } from './auth.service';
 import { IS_PUBLIC_KEY } from './auth';
-import { UserSyncService } from './user-sync.service';
 import type { AuthenticatedRequest } from './types/auth.interface';
 
+/**
+ * 本地认证守卫（自建认证）。
+ *
+ * 不再委托 sso.dofe.ai 验证 token：access token 由本地 `AuthService.verifyAccessToken`
+ * 校验签名 + Redis 会话存活，用户身份直接查本地 `UserInfo`。
+ */
 @Injectable()
 export class AuthGuard implements CanActivate {
   constructor(
     private readonly auth: AuthService,
-    private readonly ssoAuth: SsoAuthClient,
-    private readonly userSync: UserSyncService,
+    private readonly userInfoService: UserInfoService,
     private readonly reflector: Reflector,
     private readonly jwtService: JwtService,
     private readonly redisService: RedisService,
@@ -33,9 +37,7 @@ export class AuthGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
-    if (isPublic) {
-      return true;
-    }
+    if (isPublic) return true;
 
     let authTypes = this.reflector.get<string[]>('auths', context.getHandler());
     if (!authTypes) {
@@ -47,7 +49,7 @@ export class AuthGuard implements CanActivate {
 
     let userId: string | undefined;
     let isAdmin = false;
-    let isAnonymity = false;
+    const isAnonymity = false;
 
     if (!process.env.MODE_USER_ID) {
       const access =
@@ -61,16 +63,13 @@ export class AuthGuard implements CanActivate {
 
       await this.assertTokenNotBlacklisted(access);
 
-      const verifyResult = await this.ssoAuth.verifyToken(access);
-      if (!verifyResult.valid || !verifyResult.userId) {
-        this.logger.warn('AuthGuard token verification failed via SSO');
+      const verified = await this.auth.verifyAccessToken(access);
+      const localUser = await this.userInfoService.get({ id: verified.userId });
+      if (!localUser || !localUser.isActive) {
         throw apiError(CommonErrorCode.UnAuthorized);
       }
-
-      const localUser = await this.userSync.ensureLocalUserExists(verifyResult.userId);
       userId = localUser.id;
       isAdmin = localUser.isAdmin ?? false;
-      isAnonymity = false;
       request.userInfo = {
         id: localUser.id,
         nickname: localUser.nickname ?? undefined,
@@ -91,7 +90,6 @@ export class AuthGuard implements CanActivate {
       });
       userId = process.env.MODE_USER_ID;
       isAdmin = true;
-      isAnonymity = false;
       request.userInfo = {
         id: userId,
         isAdmin,
@@ -128,9 +126,9 @@ export class AuthGuard implements CanActivate {
     let blacklistedJti: string | undefined;
 
     try {
-      const decoded = this.jwtService.decode(accessToken, {
-        complete: false,
-      }) as Record<string, unknown> | null;
+      const decoded = this.jwtService.decode(accessToken, { complete: false }) as
+        | Record<string, unknown>
+        | null;
       const jti = typeof decoded?.jti === 'string' ? decoded.jti : undefined;
       if (!jti) return;
 
@@ -139,7 +137,7 @@ export class AuthGuard implements CanActivate {
         blacklistedJti = jti;
       }
     } catch (error) {
-      this.logger.warn('AuthGuard token blacklist check failed; falling back to SSO verify', {
+      this.logger.warn('AuthGuard token blacklist check failed', {
         error: error instanceof Error ? error.message : String(error),
       });
     }

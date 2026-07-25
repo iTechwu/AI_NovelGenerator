@@ -16,8 +16,8 @@ import {
   type RefreshClient,
 } from '@dofe/sso-browser/token-manager';
 import { z } from 'zod';
-import { UserInfoSchema, type UserInfo, type LoginSuccess } from '@repo/contracts';
-import { oidcAuthClient, userClient } from './api/contracts/client';
+import { UserInfoSchema, LoginSuccessSchema, type UserInfo, type LoginSuccess } from '@repo/contracts';
+import { authClient, userClient } from './api/contracts/client';
 import {
   setLoginData as storageSetLoginData,
   getAccessToken,
@@ -54,16 +54,7 @@ export class SessionExpiredError extends Error {
 const RefreshResponseSchema = z.object({
   code: z.number().optional(),
   msg: z.string().optional(),
-  data: z
-    .object({
-      access_token: z.string(),
-      expires_in: z.number().optional().default(3600),
-      token_type: z.string().optional(),
-      access_expire: z.number().optional(),
-      expire: z.number().optional(),
-      user: UserInfoSchema.optional(),
-    })
-    .optional(),
+  data: LoginSuccessSchema.optional(),
 });
 
 /**
@@ -203,9 +194,7 @@ function isSessionExpiredResponse(response: unknown): boolean {
  */
 const scaffoldRefreshClient: RefreshClient = {
   async refreshToken() {
-    const response = await oidcAuthClient.refreshToken({
-      body: {},
-    });
+    const response = await authClient.refreshToken({ body: {} });
 
     // Check for session expired errors
     if (isSessionExpiredResponse(response)) {
@@ -219,18 +208,14 @@ const scaffoldRefreshClient: RefreshClient = {
     }
 
     const parsed = RefreshResponseSchema.safeParse(response.body);
-    if (!parsed.success) {
+    if (!parsed.success || !parsed.data.data?.access) {
       throw new Error('Invalid token refresh response format');
-    }
-
-    if (!parsed.data.data?.access_token) {
-      throw new Error('No access token in refresh response');
     }
 
     const data = parsed.data.data;
     return {
-      access_token: data.access_token,
-      expires_in: data.expires_in ?? 3600,
+      access_token: data.access,
+      expires_in: data.accessExpire ?? 3600,
       user: data.user,
     };
   },

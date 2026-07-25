@@ -44,6 +44,13 @@ enum FileEnvType {
   @@map("file_env_type")
 }
 
+enum FileAccess {
+  public
+  private
+
+  @@map("file_access")
+}
+
 model UserInfo {
   id           String  @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   ssoSub       String? @unique @map("sso_sub") @db.VarChar(255) /// SSO 用户唯一标识（sso.dofe.ai 的 user.id）
@@ -53,16 +60,22 @@ model UserInfo {
   sex          SexType @default(UNKNOWN)
   locale       String? @db.VarChar(20)
   isAdmin      Boolean @default(false) @map("is_admin")
-  email        String? @db.VarChar(255) /// 来自 SSO，仅用于 profile 展示
-  mobile       String? @db.VarChar(40) /// 来自 SSO，仅用于 profile 展示
+  email        String? @db.VarChar(255) /// 本地账号邮箱（EmailAuth 关联，权威来源）
+  mobile       String? @db.VarChar(40) /// 本地账号手机号（MobileAuth 关联，权威来源）
 
-  role     String  @default("user")
-  isActive Boolean @default(true) @map("is_active")
+  role         String    @default("user")
+  isActive     Boolean   @default(true) @map("is_active")
+  lastSignInAt DateTime? @map("last_sign_in_at") @db.Timestamptz(6)
 
   isDeleted Boolean   @default(false) @map("is_deleted")
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  // ── 本地认证反向关系（自建认证）──
+  emailAuth  EmailAuth?
+  mobileAuth MobileAuth?
+  userMfa    UserMfa?
 
   @@index([code])
   @@index([ssoSub])
@@ -74,10 +87,98 @@ model UserInfo {
 }
 
 // ============================================================================
-// Auth/file source tables are not defined locally.
-// Authentication and file metadata are owned only by sso.dofe.ai.
-// This project stores SSO user/file identifiers and consumes them via SDK/client APIs.
+// Local Auth Tables - 本地账号认证（自建认证，不依赖 sso.dofe.ai）
 // ============================================================================
+model EmailAuth {
+  email                    String   @id @db.VarChar(255)
+  password                 String   @db.VarChar(255)
+  passwordEncryptionMethod String   @default("Bcrypt") @map("password_encryption_method") @db.VarChar(50)
+  verified                 Boolean  @default(false)
+  userId                   String   @unique @map("user_id") @db.Uuid
+  user                     UserInfo @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@map("t_email_auth")
+}
+
+model MobileAuth {
+  mobile                   String   @id @db.VarChar(40)
+  password                 String   @db.VarChar(255)
+  passwordEncryptionMethod String   @default("Bcrypt") @map("password_encryption_method") @db.VarChar(50)
+  verified                 Boolean  @default(false)
+  userId                   String   @unique @map("user_id") @db.Uuid
+  user                     UserInfo @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@map("t_mobile_auth")
+}
+
+/// 预留：多因素认证（本期不接 API，仅建表以备后续 TOTP）
+model UserMfa {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId      String   @unique @map("user_id") @db.Uuid
+  mfaType     String   @default("TOTP") @map("mfa_type") @db.VarChar(20)
+  secret      String   @db.Text
+  enabled     Boolean  @default(false)
+  backupCodes String[] @map("backup_codes")
+  user        UserInfo @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("t_user_mfa")
+}
+
+// ============================================================================
+// File Source - 文件元数据（本地对象存储，TOS 预签名直传）
+// ============================================================================
+model FileSource {
+  id       String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  key      String           @unique @db.VarChar(255)
+  bucket   String           @db.VarChar(255)
+  vendor   FileBucketVendor @default(tos)
+  region   String           @default("cn-beijing") @db.VarChar(50)
+  filename String?          @db.VarChar(255)
+  fsize    Float
+  mimeType String           @map("mime_type") @db.VarChar(255)
+  ext      String           @db.VarChar(20)
+  sha256   String?          @db.VarChar(64)
+  hash     String?          @db.VarChar(255)
+  thumbImg String?          @map("thumb_img") @db.Text
+  parts    Int[]
+
+  isUploaded Boolean     @default(false) @map("is_uploaded")
+  status     Int         @default(0)
+  env        FileEnvType @default(prod)
+
+  scope      String     @default("general") @db.VarChar(50)
+  access     FileAccess @default(public)
+  uploadedBy String?    @map("uploaded_by") @db.Uuid
+  tenantId   String?    @map("tenant_id") @db.Uuid
+  teamId     String?    @map("team_id") @db.Uuid
+  metadata   Json?
+
+  expireAt              DateTime? @map("expire_at") @db.Timestamptz(6)
+  transitionToIaAt      DateTime? @map("transition_to_ia_at") @db.Timestamptz(6)
+  transitionToArchiveAt DateTime? @map("transition_to_archive_at") @db.Timestamptz(6)
+
+  isDeleted Boolean   @default(false) @map("is_deleted")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([uploadedBy, isUploaded, isDeleted])
+  @@index([scope, isUploaded, isDeleted])
+  @@index([tenantId, isUploaded, isDeleted])
+  @@index([bucket])
+  @@map("f_file_source")
+}
 
 // ============================================================================
 // Country Code - 国家代码（用于 IP 信息）

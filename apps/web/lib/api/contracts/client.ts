@@ -5,13 +5,16 @@ import { initClient, type ApiFetcherArgs } from '@ts-rest/core';
 import { toast } from 'sonner';
 import {
   analyticsContract,
+  authContract,
   downloadContract,
+  fileContract,
   messageContract,
   settingContract,
   smsContract,
   systemContract,
   studioContract,
   taskContract,
+  uploaderContract,
   userContract,
   oidcAuthContract,
 } from '@repo/contracts';
@@ -54,7 +57,7 @@ const SESSION_EXPIRED_MESSAGES = [
   'Refresh token expired',
   'Session expired',
 ] as const;
-const REFRESH_ENDPOINT_PATTERN = /\/auth\/oidc\/token(?:$|[?#/])/;
+const REFRESH_ENDPOINT_PATTERN = /\/auth\/(oidc\/token|token\/refresh)(?:$|[?#/])/;
 
 /**
  * 清理过期的错误缓存
@@ -382,6 +385,21 @@ export const systemClient = initClient(systemContract, clientOptions);
 
 /** Studio API - Direct client */
 export const studioClient = initClient(studioContract, clientOptions);
+
+/**
+ * Auth API - Direct client (PUBLIC: 本地账号密码登录/注册/刷新/验证码)
+ */
+export const authClient = initClient(authContract, publicClientOptions);
+
+/**
+ * Uploader API - Direct client (预签名直传)
+ */
+export const uploaderClient = initClient(uploaderContract, clientOptions);
+
+/**
+ * File API - Direct client (文件 CRUD / CDN)
+ */
+export const fileClient = initClient(fileContract, clientOptions);
 
 // ============================================================================
 // React Query Clients (for hooks)

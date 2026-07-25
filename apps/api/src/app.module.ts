@@ -44,7 +44,11 @@ import { VerifyModule } from '@dofe/infra-clients';
 import { SystemHealthModule } from '@dofe/infra-shared-services';
 import { DbMetricsService } from '@dofe/infra-prisma';
 import { AuthModule } from '@app/auth';
-import { OidcClientApiModule } from './modules/oidc-client-api/oidc-client-api.module';
+import { AuthApiModule } from './modules/auth-api/auth-api.module';
+import { UserApiModule } from './modules/user-api/user-api.module';
+import { UploaderApiModule } from './modules/uploader/uploader.module';
+import { FileApiModule } from './modules/file-api/file-api.module';
+import { CdnProxyModule } from './modules/cdn-proxy/cdn-proxy.module';
 import { StudioModule } from './modules/studio/studio.module';
 import { StudioFinalizationCronModule } from './cron/studio-finalization/studio-finalization-cron.module';
 import { StudioGenerationCronModule } from './cron/studio-generation/studio-generation-cron.module';
@@ -170,7 +174,11 @@ const loadAppConfig = (): Record<string, unknown> => getConfig() ?? {};
     SystemHealthModule,
     JwtModule,
     AuthModule,
-    OidcClientApiModule,
+    AuthApiModule,
+    UserApiModule,
+    UploaderApiModule,
+    FileApiModule,
+    CdnProxyModule,
     StudioModule,
     StudioGenerationCronModule,
     StudioFinalizationCronModule,
