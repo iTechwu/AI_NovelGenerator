@@ -147,6 +147,18 @@ class HardFactReviewFinding(BaseModel):
     suggestedAction: str
 
 
+class ConsistencyReviewRequest(BaseModel):
+    novelSetting: str = Field(default='', max_length=20_000)
+    characterState: str = Field(default='', max_length=20_000)
+    globalSummary: str = Field(default='', max_length=20_000)
+    chapterText: str = Field(min_length=1, max_length=200_000)
+    plotArcs: str = Field(default='', max_length=10_000)
+
+
+class ConsistencyReviewResult(BaseModel):
+    report: str
+
+
 # Load backend/.env so the runtime picks up LLM_* / NOVEL_RUNTIME_* whether it is
 # launched via `pnpm start` (scripts/start-local-services.js) or `uvicorn` directly.
 # override=False (default): a real process env var always wins over the file.
@@ -386,6 +398,22 @@ async def review_hard_facts(
                 suggestedAction=f'请修改正文，或为已确认事实“{fact.subject} / {fact.predicate} / {fact.value}”记录有意变更理由。',
             ))
     return findings
+
+
+@app.post('/v1/reviews/consistency', response_model=ConsistencyReviewResult)
+async def review_consistency(
+    request: ConsistencyReviewRequest,
+    _: None = Depends(require_internal_access),
+) -> ConsistencyReviewResult:
+    report = await asyncio.to_thread(
+        engine.review_consistency,
+        request.novelSetting,
+        request.characterState,
+        request.globalSummary,
+        request.chapterText,
+        request.plotArcs,
+    )
+    return ConsistencyReviewResult(report=report)
 
 
 @app.post('/v1/generation-jobs/{job_id}/retry', response_model=GenerationJob, status_code=status.HTTP_202_ACCEPTED)

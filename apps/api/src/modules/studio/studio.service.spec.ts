@@ -83,12 +83,17 @@ describe('StudioService', () => {
     get: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    count: jest.fn(),
   };
   const sourceSceneMappingService = {
     list: jest.fn(),
     getById: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+  };
+  const screenplayRevisionService = {
+    list: jest.fn(),
+    create: jest.fn(),
   };
   const blueprintService = {
     create: jest.fn(),
@@ -160,6 +165,7 @@ describe('StudioService', () => {
   const auditLogService = {
     logCreate: jest.fn(),
     logUpdate: jest.fn(),
+    logExport: jest.fn(),
   };
 
   let service: StudioService;
@@ -188,6 +194,7 @@ describe('StudioService', () => {
       adaptationDecisionService as never,
       scenePlanService as never,
       sourceSceneMappingService as never,
+      screenplayRevisionService as never,
       runService as never,
       blueprintService as never,
       chapterPlanService as never,
@@ -758,6 +765,57 @@ describe('StudioService', () => {
     expect(confirmed.confirmedAt).toBe(createdAt.toISOString());
   });
 
+  it('blocks script writing without a confirmed scene plan and advances once one exists', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      status: 'SCENE_PLANNING',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 2,
+      createdAt,
+    });
+    scenePlanService.count.mockResolvedValue(0);
+
+    await expect(service.startScriptWriting(ownerId, adaptationId)).rejects.toMatchObject({});
+    expect(adaptationProjectService.update).not.toHaveBeenCalled();
+    expect(scenePlanService.count).toHaveBeenCalledWith({
+      adaptationId,
+      confirmedAt: { not: null },
+    });
+
+    scenePlanService.count.mockResolvedValue(1);
+    adaptationProjectService.update.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      rightsConfirmedAt: createdAt,
+      status: 'SCRIPT_WRITING',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const result = await service.startScriptWriting(ownerId, adaptationId);
+
+    expect(adaptationProjectService.update).toHaveBeenCalledWith(
+      { id: adaptationId },
+      { status: 'SCRIPT_WRITING' },
+    );
+    expect(result.status).toBe('script_writing');
+  });
+
   it('anchors a planned scene to a real source chapter and rejects unknown scenes', async () => {
     const sceneOutline = [
       { sceneNumber: 1, title: '码头重逢', synopsis: '女主回到雾港码头。', sourceChapterIds: [] },
@@ -871,6 +929,156 @@ describe('StudioService', () => {
       { status: 'STALE' },
     );
     expect(result.status).toBe('stale');
+  });
+
+  it('appends an immutable screenplay scene revision and rejects unknown scenes', async () => {
+    const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
+    const sceneOutline = [
+      { sceneNumber: 1, title: '码头重逢', synopsis: '女主回到雾港码头。', sourceChapterIds: [] },
+    ];
+    const content = 'INT. 码头 - 夜\n\n女主撑伞走近，灯光在水面上碎裂。';
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      status: 'SCRIPT_WRITING',
+    });
+    scenePlanService.get.mockResolvedValue({
+      id: scenePlanId,
+      adaptationId,
+      episodeNumber: 1,
+      sceneOutline,
+    });
+    screenplayRevisionService.list.mockResolvedValue({
+      list: [{ version: 2 }],
+      total: 1,
+      page: 1,
+      limit: 1,
+    });
+    screenplayRevisionService.create.mockResolvedValue({
+      id: '7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e',
+      adaptationId,
+      scenePlanId,
+      episodeNumber: 1,
+      sceneNumber: 1,
+      source: 'AUTHOR',
+      sourceRevisionId: null,
+      version: 3,
+      content,
+      contentHash: 'a'.repeat(64),
+      wordCount: 12,
+      editSummary: '初稿',
+      createdAt,
+    });
+
+    const revision = await service.createScreenplaySceneRevision(ownerId, adaptationId, {
+      episodeNumber: 1,
+      sceneNumber: 1,
+      content,
+      editSummary: '初稿',
+    });
+
+    expect(screenplayRevisionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scenePlan: { connect: { id: scenePlanId } },
+        sceneNumber: 1,
+        version: 3,
+        source: 'AUTHOR',
+        editSummary: '初稿',
+      }),
+    );
+    expect(revision).toMatchObject({ version: 3, source: 'author' });
+
+    // A scene that was never planned must not get an orphan screenplay revision.
+    screenplayRevisionService.create.mockClear();
+    await expect(
+      service.createScreenplaySceneRevision(ownerId, adaptationId, {
+        episodeNumber: 1,
+        sceneNumber: 99,
+        content,
+      }),
+    ).rejects.toMatchObject({});
+    expect(screenplayRevisionService.create).not.toHaveBeenCalled();
+  });
+
+  it('exports confirmed scene plans with their latest screenplay as a fountain', async () => {
+    const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 2,
+      createdAt,
+    });
+    scenePlanService.list.mockResolvedValue({
+      list: [
+        {
+          id: scenePlanId,
+          adaptationId,
+          episodeNumber: 1,
+          title: '雾港重逢',
+          synopsis: '女主回到雾港码头。',
+          sceneOutline: [
+            {
+              sceneNumber: 1,
+              title: '码头重逢',
+              synopsis: '女主与旧识相遇。',
+              sourceChapterIds: [],
+            },
+          ],
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 200,
+    });
+    screenplayRevisionService.list.mockResolvedValue({
+      list: [{ content: 'INT. 码头 - 夜\n\n女主撑伞走近。' }],
+      total: 1,
+      page: 1,
+      limit: 1,
+    });
+
+    const result = await service.exportAdaptation(ownerId, adaptationId, { format: 'fountain' });
+
+    expect(result.contentType).toBe('text/plain');
+    expect(result.filename).toBe('雾港来信-screenplay.fountain');
+    expect(result.content).toContain('Title: 雾港来信');
+    expect(result.content).toContain('第 1 集 · 雾港重逢');
+    expect(result.content).toContain('INT. 码头 - 夜');
+    expect(result.episodeCount).toBe(1);
+    expect(result.sourceSnapshotId).toBe(snapshotId);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('refuses to export a screenplay when no scene plan is confirmed', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+    });
+    adaptationSourceSnapshotService.get.mockResolvedValue({
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 2,
+      createdAt,
+    });
+    scenePlanService.list.mockResolvedValue({ list: [], total: 0, page: 1, limit: 200 });
+
+    await expect(
+      service.exportAdaptation(ownerId, adaptationId, { format: 'txt' }),
+    ).rejects.toMatchObject({});
   });
 
   it('projects a dispatch failure after persisting the project and queued run', async () => {

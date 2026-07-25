@@ -372,6 +372,16 @@ enum StudioSourceMappingStatus {
   @@map("studio_source_mapping_status")
 }
 
+// Who authored a screenplay scene revision. M1 ships author-authored revisions
+// (the author writes/edits the screenplay directly); AI-generated revisions
+// arrive later with the per-scene generation runtime.
+enum StudioScreenplayRevisionSource {
+  AUTHOR @map("author")
+  AI     @map("ai")
+
+  @@map("studio_screenplay_revision_source")
+}
+
 enum StudioFinalizationTaskStatus {
   PENDING   @map("pending")
   COMPLETED @map("completed")
@@ -529,6 +539,7 @@ model StudioAdaptationProject {
   decisions      StudioAdaptationDecision[]
   scenePlans     StudioScenePlan[]
   sourceMappings StudioSourceSceneMapping[]
+  screenplayRevisions StudioScreenplaySceneRevision[]
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([sourceProjectId, createdAt(sort: Desc)])
@@ -618,10 +629,38 @@ model StudioScenePlan {
 
   adaptation StudioAdaptationProject @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
   sourceMappings StudioSourceSceneMapping[]
+  screenplayRevisions StudioScreenplaySceneRevision[]
 
   @@unique([adaptationId, episodeNumber])
   @@index([adaptationId, episodeNumber])
   @@map("studio_scene_plans")
+}
+
+// Immutable, append-only screenplay for a single planned scene. Each save
+// creates a new version (never mutates history); Fountain-formatted text is
+// stored in `content`. Mirrors the StudioChapterRevision immutability contract
+// so every screenplay draft is comparable and recoverable (PRD P12).
+model StudioScreenplaySceneRevision {
+  id              String                            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId    String                            @map("adaptation_id") @db.Uuid
+  scenePlanId     String                            @map("scene_plan_id") @db.Uuid
+  episodeNumber   Int                               @map("episode_number") @db.SmallInt
+  sceneNumber     Int                               @map("scene_number") @db.SmallInt
+  source          StudioScreenplayRevisionSource   @default(AUTHOR)
+  sourceRevisionId String?                          @map("source_revision_id") @db.Uuid
+  version         Int                               @db.SmallInt
+  content         String                            @db.Text
+  contentHash     String                            @map("content_hash") @db.Char(64)
+  wordCount       Int                               @map("word_count")
+  editSummary     String?                           @map("edit_summary") @db.VarChar(500)
+  createdAt       DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  adaptation StudioAdaptationProject @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
+  scenePlan  StudioScenePlan         @relation(fields: [scenePlanId], references: [id], onDelete: Restrict)
+
+  @@unique([scenePlanId, sceneNumber, version])
+  @@index([adaptationId, episodeNumber, sceneNumber, createdAt(sort: Desc)])
+  @@map("studio_screenplay_scene_revisions")
 }
 
 // Normalized, reviewable traceability link between a planned scene and the

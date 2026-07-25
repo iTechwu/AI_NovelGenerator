@@ -61,7 +61,7 @@ function loadEnvFile(filePath) {
 // Forward runtime-relevant vars from backend/.env to the Python runtime, and
 // make NOVEL_RUNTIME_* visible to the API as well. Placed BEFORE ...process.env
 // so a real shell/exported env var still takes precedence over the file.
-const RUNTIME_ENV_KEY = /^(LLM_|NOVEL_RUNTIME_)/;
+const RUNTIME_ENV_KEY = /^(LLM_|NOVEL_RUNTIME_|EMBEDDING_)/;
 const runtimeEnvFromDotenv = {};
 for (const [key, value] of Object.entries(loadEnvFile(path.join(root, 'backend', '.env')))) {
   if (RUNTIME_ENV_KEY.test(key) || key === 'PROJECT_STORAGE_ROOT') {

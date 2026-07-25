@@ -211,6 +211,18 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.startScriptWriting)
+  async startScriptWriting(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.startScriptWriting, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.startScriptWriting(request.userId, params.adaptationId),
+      },
+    }));
+  }
+
   @TsRestHandler(c.saveScenePlan)
   async saveScenePlan(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.saveScenePlan, async ({ params, body }) => ({
@@ -288,6 +300,54 @@ export class StudioController {
           params.adaptationId,
           params.mappingId,
           body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listScreenplaySceneRevisions)
+  async listScreenplaySceneRevisions(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listScreenplaySceneRevisions, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listScreenplaySceneRevisions(
+          request.userId,
+          params.adaptationId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.createScreenplaySceneRevision)
+  async createScreenplaySceneRevision(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createScreenplaySceneRevision, async ({ params, body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.createScreenplaySceneRevision(
+          request.userId,
+          params.adaptationId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.exportAdaptation)
+  async exportAdaptation(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.exportAdaptation, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.exportAdaptation(
+          request.userId,
+          params.adaptationId,
+          query,
         ),
       },
     }));

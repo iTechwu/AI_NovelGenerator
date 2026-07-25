@@ -28,6 +28,7 @@ import {
   StudioAdaptationDecisionService,
   StudioScenePlanService,
   StudioSourceSceneMappingService,
+  StudioScreenplaySceneRevisionService,
 } from '@app/db';
 import type {
   StudioBlueprint,
@@ -46,6 +47,7 @@ import type {
   StudioAdaptationDecision,
   StudioScenePlan,
   StudioSourceSceneMapping,
+  StudioScreenplaySceneRevision,
   Prisma,
 } from '@prisma/client';
 import { CommonErrorCode } from '@repo/contracts/errors';
@@ -117,6 +119,12 @@ import type {
   ResolveStudioSourceSceneMapping,
   StudioSourceSceneMappingListQuery,
   StudioSourceSceneMappingListResponse,
+  StudioScreenplaySceneRevision as StudioScreenplaySceneRevisionResponse,
+  CreateStudioScreenplaySceneRevision,
+  StudioScreenplaySceneRevisionListQuery,
+  StudioScreenplaySceneRevisionListResponse,
+  StudioAdaptationExport as StudioAdaptationExportResponse,
+  StudioAdaptationExportQuery,
   CreateStudioAdaptationDecision,
   ResolveStudioAdaptationDecision,
   StudioAdaptationDecision as StudioAdaptationDecisionResponse,
@@ -188,6 +196,7 @@ export class StudioService {
     private readonly adaptationDecisionService: StudioAdaptationDecisionService,
     private readonly scenePlanService: StudioScenePlanService,
     private readonly sourceSceneMappingService: StudioSourceSceneMappingService,
+    private readonly screenplayRevisionService: StudioScreenplaySceneRevisionService,
     private readonly runService: StudioGenerationRunService,
     private readonly blueprintService: StudioBlueprintService,
     private readonly chapterPlanService: StudioChapterPlanService,
@@ -758,6 +767,38 @@ export class StudioService {
     return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptationId));
   }
 
+  async startScriptWriting(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'SCENE_PLANNING') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入并完成场景计划，再开始剧本生成。',
+      });
+    }
+    // PRD P13: screenplay is written per confirmed scene plan. Require at least
+    // one confirmed plan before entering script_writing so authors do not draft
+    // screenplay against an unconfirmed outline.
+    const confirmedPlanCount = await this.scenePlanService.count({
+      adaptationId,
+      confirmedAt: { not: null },
+    });
+    if (confirmedPlanCount === 0) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先确认至少一集场景计划，再进入剧本生成。',
+      });
+    }
+    const updated = await this.adaptationProjectService.update(
+      { id: adaptationId },
+      { status: 'SCRIPT_WRITING' },
+    );
+    await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
+      status: 'script_writing',
+    });
+    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptationId));
+  }
+
   async listScenePlans(
     userId: string,
     adaptationId: string,
@@ -958,6 +999,201 @@ export class StudioService {
       { adaptationId, sourceChapterId: sourceChapter.id },
     );
     return this.toSourceSceneMapping(updated, sourceChapter);
+  }
+
+  async listScreenplaySceneRevisions(
+    userId: string,
+    adaptationId: string,
+    query: StudioScreenplaySceneRevisionListQuery,
+  ): Promise<StudioScreenplaySceneRevisionListResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    const where: Prisma.StudioScreenplaySceneRevisionWhereInput = { adaptationId };
+    if (query.episodeNumber) where.episodeNumber = query.episodeNumber;
+    if (query.sceneNumber) where.sceneNumber = query.sceneNumber;
+    const revisions = await this.screenplayRevisionService.list(
+      where,
+      {
+        page: query.page,
+        limit: query.limit,
+        orderBy: [
+          { episodeNumber: 'asc' },
+          { sceneNumber: 'asc' },
+          { version: 'desc' },
+        ],
+      },
+    );
+    return {
+      ...revisions,
+      list: revisions.list.map((revision) => this.toScreenplaySceneRevision(revision)),
+    };
+  }
+
+  async createScreenplaySceneRevision(
+    userId: string,
+    adaptationId: string,
+    input: CreateStudioScreenplaySceneRevision,
+  ): Promise<StudioScreenplaySceneRevisionResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status === 'BRIEF_DRAFT' || adaptation.status === 'BLUEPRINT_REVIEW') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入场景计划并规划场景，再编写场景剧本。',
+      });
+    }
+    const scenePlan = await this.scenePlanService.get({
+      adaptationId,
+      episodeNumber: input.episodeNumber,
+    });
+    if (!scenePlan) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集场景计划不存在，请先保存本集计划。',
+      });
+    }
+    const outline = (scenePlan.sceneOutline ?? []) as StudioScenePlanSceneOutline;
+    const sceneExists = outline.some((scene) => scene.sceneNumber === input.sceneNumber);
+    if (!sceneExists) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集不存在此场景编号，无法编写场景剧本。',
+      });
+    }
+    // Immutable, append-only: every save is a new version. The latest version
+    // for the scene is max(existing); we never mutate a prior revision.
+    const { list } = await this.screenplayRevisionService.list(
+      { scenePlanId: scenePlan.id, sceneNumber: input.sceneNumber },
+      { page: 1, limit: 1, orderBy: { version: 'desc' } },
+    );
+    const revision = await this.screenplayRevisionService.create({
+      adaptation: { connect: { id: adaptationId } },
+      scenePlan: { connect: { id: scenePlan.id } },
+      episodeNumber: input.episodeNumber,
+      sceneNumber: input.sceneNumber,
+      source: 'AUTHOR',
+      sourceRevisionId: input.sourceRevisionId ?? null,
+      version: (list[0]?.version ?? 0) + 1,
+      content: input.content,
+      contentHash: this.hashContent(input.content),
+      wordCount: this.countWords(input.content),
+      editSummary: input.editSummary ?? null,
+    });
+    await this.auditLogService.logCreate(
+      'studio.screenplay_scene_revision',
+      revision.id,
+      userId,
+      {
+        adaptationId,
+        scenePlanId: scenePlan.id,
+        episodeNumber: input.episodeNumber,
+        sceneNumber: input.sceneNumber,
+        version: revision.version,
+      },
+    );
+    return this.toScreenplaySceneRevision(revision);
+  }
+
+  async exportAdaptation(
+    userId: string,
+    adaptationId: string,
+    query: StudioAdaptationExportQuery,
+  ): Promise<StudioAdaptationExportResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const plans = await this.scenePlanService.list(
+      { adaptationId, confirmedAt: { not: null } },
+      { page: 1, limit: 200, orderBy: { episodeNumber: 'asc' } },
+    );
+    if (plans.list.length === 0) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '没有已确认的场景计划，无法导出剧本。',
+      });
+    }
+    // For each confirmed plan, resolve the latest screenplay revision per scene.
+    const episodes = await Promise.all(
+      plans.list.map(async (plan) => {
+        const outline = (plan.sceneOutline ?? []) as StudioScenePlanSceneOutline;
+        const scenes = await Promise.all(
+          outline.map(async (scene) => {
+            const { list } = await this.screenplayRevisionService.list(
+              { scenePlanId: plan.id, sceneNumber: scene.sceneNumber },
+              { page: 1, limit: 1, orderBy: { version: 'desc' } },
+            );
+            return {
+              sceneNumber: scene.sceneNumber,
+              title: scene.title,
+              revision: list[0] ?? null,
+            };
+          }),
+        );
+        return {
+          episodeNumber: plan.episodeNumber,
+          title: plan.title,
+          synopsis: plan.synopsis,
+          scenes,
+        };
+      }),
+    );
+
+    const unwrittenSceneCount = episodes.reduce(
+      (sum, ep) => sum + ep.scenes.filter((scene) => !scene.revision).length,
+      0,
+    );
+    const warnings: string[] = [];
+    if (unwrittenSceneCount > 0) {
+      warnings.push(`含 ${unwrittenSceneCount} 个尚未编写场景剧本的场景。`);
+    }
+
+    const credit =
+      adaptation.targetFormat === 'SERIES' ? '剧集改编剧本' : '短剧改编剧本';
+    const content =
+      query.format === 'fountain'
+        ? [
+            `Title: ${snapshot.sourceProjectTitle}`,
+            `Credit: ${credit}`,
+            '',
+            '==',
+            '',
+            ...episodes.flatMap((episode) => [
+              `# 第 ${episode.episodeNumber} 集 · ${episode.title}`,
+              ...(episode.synopsis ? [`> ${episode.synopsis}`, ''] : []),
+              ...episode.scenes.flatMap((scene) => [
+                scene.revision
+                  ? scene.revision.content
+                  : `# 场景 ${scene.sceneNumber} · ${scene.title}（尚未编写）`,
+                '',
+              ]),
+            ]),
+          ].join('\n')
+        : [
+            `${snapshot.sourceProjectTitle} · ${credit}`,
+            `来源快照：${snapshot.sourceChapterCount} 章`,
+            '',
+            ...episodes.flatMap((episode) => [
+              `第 ${episode.episodeNumber} 集 · ${episode.title}`,
+              episode.synopsis,
+              '',
+              ...episode.scenes.flatMap((scene) => [
+                `【场景 ${scene.sceneNumber} · ${scene.title}】`,
+                scene.revision
+                  ? scene.revision.content
+                  : '（尚未编写场景剧本）',
+                '',
+              ]),
+            ]),
+          ].join('\n');
+
+    await this.auditLogService.logExport('studio.adaptation_project', userId, {
+      adaptationId,
+      format: query.format,
+      episodeCount: episodes.length,
+      warnings,
+    });
+
+    return {
+      filename: `${this.safeExportFilename(snapshot.sourceProjectTitle)}-screenplay.${query.format === 'fountain' ? 'fountain' : 'txt'}`,
+      contentType: 'text/plain',
+      content,
+      sourceSnapshotId: snapshot.id,
+      episodeCount: episodes.length,
+      warnings,
+    };
   }
 
   async previewProjectImport(
@@ -3295,6 +3531,30 @@ export class StudioService {
       status: status[mapping.status],
       createdAt: mapping.createdAt.toISOString(),
       updatedAt: mapping.updatedAt.toISOString(),
+    };
+  }
+
+  private toScreenplaySceneRevision(
+    revision: StudioScreenplaySceneRevision,
+  ): StudioScreenplaySceneRevisionResponse {
+    const source = {
+      AUTHOR: 'author',
+      AI: 'ai',
+    } as const;
+    return {
+      id: revision.id,
+      adaptationId: revision.adaptationId,
+      scenePlanId: revision.scenePlanId,
+      episodeNumber: revision.episodeNumber,
+      sceneNumber: revision.sceneNumber,
+      source: source[revision.source],
+      sourceRevisionId: revision.sourceRevisionId,
+      version: revision.version,
+      content: revision.content,
+      contentHash: revision.contentHash,
+      wordCount: revision.wordCount,
+      editSummary: revision.editSummary,
+      createdAt: revision.createdAt.toISOString(),
     };
   }
 

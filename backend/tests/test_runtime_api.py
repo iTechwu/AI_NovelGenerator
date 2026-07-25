@@ -53,6 +53,16 @@ def test_runtime_workspace_is_isolated_by_project_and_run(tmp_path: Path) -> Non
     )
 
 
+def test_starter_outline_covers_every_requested_chapter() -> None:
+    outline = GenerationEngine._starter_outline('雾港来信', 3)
+
+    assert outline.splitlines() == [
+        '第 1 章：异象出现 - 《雾港来信》',
+        '第 2 章：追索线索 - 《雾港来信》',
+        '第 3 章：阻力加剧 - 《雾港来信》',
+    ]
+
+
 def test_runtime_writes_completion_checkpoint_for_the_nest_run_id(
     monkeypatch,
     tmp_path: Path,

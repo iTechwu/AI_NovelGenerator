@@ -57,6 +57,32 @@ describe('studio schemas', () => {
     ).toBe('succeeded');
   });
 
+  it('normalizes unset nullable fields from the Python runtime', () => {
+    const job = GenerationJobSchema.parse({
+      id: '585f7dda-1a1a-4d6d-a4cd-2e10f6c2a720',
+      project: {
+        id: '9323d31e-4968-4ed1-a90c-326ec5c764a1',
+        title: '雾港来信',
+        format: 'novel',
+        genre: '悬疑',
+        chapterCount: 20,
+        targetWordsPerChapter: 3000,
+      },
+      status: 'queued',
+      progress: 0,
+      currentStep: 'Queued',
+      artifact: null,
+      revisionId: null,
+      modelConfig: null,
+      error: null,
+      createdAt: '2026-07-24T10:00:00.000Z',
+      updatedAt: '2026-07-24T10:01:00.000Z',
+    });
+
+    expect(job.artifact).toBeUndefined();
+    expect(job.error).toBeUndefined();
+  });
+
   it('requires explicit source-right confirmation before starting an adaptation', () => {
     expect(
       CreateStudioAdaptationSchema.safeParse({

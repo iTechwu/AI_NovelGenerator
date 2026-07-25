@@ -31,6 +31,12 @@ class RuntimeSettings:
     model_outline: str
     model_chapter_draft: str
     model_consistency_review: str
+    # Embedding config for knowledge/RAG. Empty endpoint/appkey => no embeddings.
+    embedding_endpoint: str
+    embedding_appkey: str
+    embedding_model: str
+    embedding_interface_format: str
+    embedding_retrieval_k: int
 
     @classmethod
     def from_environment(cls) -> 'RuntimeSettings':
@@ -52,6 +58,28 @@ class RuntimeSettings:
             model_outline=os.environ.get('LLM_MODEL_OUTLINE') or model,
             model_chapter_draft=os.environ.get('LLM_MODEL_CHAPTER_DRAFT') or model,
             model_consistency_review=os.environ.get('LLM_MODEL_CONSISTENCY_REVIEW') or model,
+            embedding_endpoint=os.environ.get('EMBEDDING_ENDPOINT', ''),
+            embedding_appkey=os.environ.get('EMBEDDING_APPKEY', ''),
+            embedding_model=os.environ.get('EMBEDDING_MODEL', ''),
+            embedding_interface_format=os.environ.get('EMBEDDING_INTERFACE_FORMAT', 'OpenAI'),
+            embedding_retrieval_k=int(os.environ.get('EMBEDDING_RETRIEVAL_K', '4')),
+        )
+
+    def build_embedding_adapter(self):
+        """Build the embedding adapter from settings, or None if unconfigured.
+
+        Lazily imports embedding_adapters (heavy langchain/google deps) so health
+        checks and non-RAG jobs don't pay the import cost.
+        """
+        if not self.embedding_endpoint or not self.embedding_appkey:
+            return None
+        from embedding_adapters import create_embedding_adapter
+
+        return create_embedding_adapter(
+            interface_format=self.embedding_interface_format,
+            api_key=self.embedding_appkey,
+            base_url=self.embedding_endpoint,
+            model_name=self.embedding_model,
         )
 
 
@@ -187,20 +215,47 @@ class GenerationEngine:
                 report(90, 'Recovered chapter outline')
             else:
                 report(70, 'Generating chapter outline')
-                Chapter_blueprint_generate(
-                    interface_format=self._settings.interface_format,
-                    api_key=self._settings.api_key,
-                    base_url=self._settings.base_url,
-                    llm_model=self._settings.model_outline,
-                    filepath=str(workspace),
-                    number_of_chapters=project.chapterCount,
-                    user_guidance=project.guidance,
-                    temperature=self._settings.temperature,
-                    max_tokens=self._settings.max_tokens,
-                    timeout=self._settings.timeout_seconds,
-                )
+                try:
+                    Chapter_blueprint_generate(
+                        interface_format=self._settings.interface_format,
+                        api_key=self._settings.api_key,
+                        base_url=self._settings.base_url,
+                        llm_model=self._settings.model_outline,
+                        filepath=str(workspace),
+                        number_of_chapters=project.chapterCount,
+                        user_guidance=project.guidance,
+                        temperature=self._settings.temperature,
+                        max_tokens=self._settings.max_tokens,
+                        timeout=self._settings.timeout_seconds,
+                    )
+                except Exception:
+                    # Keep an otherwise-complete project usable when the outline
+                    # provider has a transient failure. Authors can refine this
+                    # starter outline in the confirmed blueprint workflow.
+                    report(85, 'Using starter chapter outline')
+                    outline_path.write_text(
+                        self._starter_outline(project.title, project.chapterCount),
+                        encoding='utf-8',
+                    )
             artifact['outline'] = self._read_output(outline_path)
         return artifact
+
+    @staticmethod
+    def _starter_outline(title: str, chapter_count: int) -> str:
+        stages = (
+            '异象出现',
+            '追索线索',
+            '阻力加剧',
+            '旧事浮现',
+            '局势逆转',
+            '真相逼近',
+            '最终抉择',
+            '余波未平',
+        )
+        return '\n'.join(
+            f'第 {chapter_number} 章：{stages[(chapter_number - 1) % len(stages)]} - 《{title}》'
+            for chapter_number in range(1, chapter_count + 1)
+        )
 
     def generate_chapter_draft(
         self,
@@ -273,6 +328,55 @@ class GenerationEngine:
                 error,
             )
         return {'chapterDraft': content, 'factChanges': fact_changes}
+
+    def review_consistency(
+        self,
+        novel_setting: str,
+        character_state: str,
+        global_summary: str,
+        chapter_text: str,
+        plot_arcs: str = '',
+    ) -> str:
+        """LLM consistency check of the latest chapter vs setting/state/summary.
+
+        Uses the dedicated consistency-review role model. Returns the model's
+        natural-language report (or '无明显冲突' when nothing is found).
+        """
+        from consistency_checker import check_consistency
+
+        return check_consistency(
+            novel_setting=novel_setting,
+            character_state=character_state,
+            global_summary=global_summary,
+            chapter_text=chapter_text,
+            api_key=self._settings.api_key,
+            base_url=self._settings.base_url,
+            model_name=self._settings.model_consistency_review,
+            temperature=0.3,
+            plot_arcs=plot_arcs,
+            interface_format=self._settings.interface_format,
+            max_tokens=self._settings.max_tokens,
+            timeout=self._settings.timeout_seconds,
+        )
+
+    def enrich_chapter(self, chapter_text: str, target_words: int) -> str:
+        """Expand chapter text toward target_words while keeping the plot coherent.
+
+        Uses the chapter-draft role model (prose generation).
+        """
+        from novel_generator.finalization import enrich_chapter_text
+
+        return enrich_chapter_text(
+            chapter_text=chapter_text,
+            word_number=target_words,
+            api_key=self._settings.api_key,
+            base_url=self._settings.base_url,
+            model_name=self._settings.model_chapter_draft,
+            temperature=self._settings.temperature,
+            interface_format=self._settings.interface_format,
+            max_tokens=self._settings.max_tokens,
+            timeout=self._settings.timeout_seconds,
+        )
 
     @staticmethod
     def _read_fact_changes(path: Path) -> list[dict[str, str | float]]:

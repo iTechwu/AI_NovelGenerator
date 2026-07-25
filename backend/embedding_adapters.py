@@ -281,6 +281,55 @@ class SiliconFlowEmbeddingAdapter(BaseEmbeddingAdapter):
             logging.error(f"Error parsing SiliconFlow API response: {str(e)}")
             return []
 
+class VolcengineMultimodalEmbeddingAdapter(BaseEmbeddingAdapter):
+    """
+    火山引擎 Ark「多模态」嵌入适配器（doubao-embedding-vision，/embeddings/multimodal）。
+
+    与 OpenAI 文本嵌入两端都不兼容，因此单独实现：
+      - 请求 input = 对象数组 [{"type":"text","text":...}]（这里只把文本包成 text 类型）
+      - 响应 data  = 单个对象 {"embedding":[...]}（每次调用只返回一个向量）
+
+    故 embed_documents 对每段文本逐条调用。后续如需吞吐，可用并发或确认端点批量能力再优化。
+    """
+    def __init__(self, api_key: str, base_url: str, model_name: str):
+        # base_url 需是完整端点，如 https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal
+        self.url = base_url
+        self.api_key = api_key
+        self.model_name = model_name
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _embed_one(self, text: str) -> List[float]:
+        if not text:
+            return []
+        payload = {
+            "model": self.model_name,
+            "encoding_format": "float",
+            "input": [{"type": "text", "text": text}],
+        }
+        try:
+            response = requests.post(self.url, json=payload, headers=self.headers, timeout=DEFAULT_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            data = response.json().get("data", {})
+            # 端点返回 data 为单对象 {"embedding":[...]}；兼容可能的 list 形态。
+            if isinstance(data, dict):
+                return data.get("embedding", [])
+            if isinstance(data, list) and data:
+                return data[0].get("embedding", [])
+            return []
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logging.error(f"Volcengine multimodal embedding error: {e}")
+            return []
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [self._embed_one(t) for t in texts]
+
+    def embed_query(self, query: str) -> List[float]:
+        return self._embed_one(query)
+
+
 def create_embedding_adapter(
     interface_format: str,
     api_key: str,
@@ -303,5 +352,7 @@ def create_embedding_adapter(
         return GeminiEmbeddingAdapter(api_key, model_name, base_url)
     elif fmt == "siliconflow":
         return SiliconFlowEmbeddingAdapter(api_key, base_url, model_name)
+    elif fmt == "volcengine-multimodal":
+        return VolcengineMultimodalEmbeddingAdapter(api_key, base_url, model_name)
     else:
         raise ValueError(f"Unknown embedding interface_format: {interface_format}")

@@ -1,0 +1,5 @@
+-- RenameIndex
+ALTER INDEX "studio_screenplay_scene_revisions_adaptation_id_episode_number_" RENAME TO "studio_screenplay_scene_revisions_adaptation_id_episode_num_idx";
+
+-- RenameIndex
+ALTER INDEX "studio_screenplay_scene_revisions_scene_plan_id_scene_number_ve" RENAME TO "studio_screenplay_scene_revisions_scene_plan_id_scene_numbe_key";

@@ -28,6 +28,12 @@ import {
   StudioSourceSceneMappingSchema,
   StudioSourceSceneMappingListQuerySchema,
   StudioSourceSceneMappingListResponseSchema,
+  CreateStudioScreenplaySceneRevisionSchema,
+  StudioScreenplaySceneRevisionSchema,
+  StudioScreenplaySceneRevisionListQuerySchema,
+  StudioScreenplaySceneRevisionListResponseSchema,
+  StudioAdaptationExportQuerySchema,
+  StudioAdaptationExportSchema,
   CreateStudioChapterDraftSchema,
   CreateStudioAuthorRevisionSchema,
   GenerationJobSchema,
@@ -181,6 +187,15 @@ export const studioContract = c.router(
       responses: { 200: ApiResponseSchema(StudioScenePlanListResponseSchema) },
       summary: 'List per-episode scene plans for an adaptation',
     },
+    startScriptWriting: {
+      method: 'POST',
+      path: '/adaptations/:adaptationId/script-writing/start',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      body: z.object({}),
+      responses: { 200: ApiResponseSchema(StudioAdaptationProjectSchema) },
+      summary:
+        'Advance an adaptation from scene planning to script writing once at least one scene plan is confirmed',
+    },
     saveScenePlan: {
       method: 'PUT',
       path: '/adaptations/:adaptationId/scene-plans/:episodeNumber',
@@ -230,6 +245,33 @@ export const studioContract = c.router(
       body: ResolveStudioSourceSceneMappingSchema,
       responses: { 200: ApiResponseSchema(StudioSourceSceneMappingSchema) },
       summary: 'Confirm a source-scene mapping or mark it stale for re-review',
+    },
+    listScreenplaySceneRevisions: {
+      method: 'GET',
+      path: '/adaptations/:adaptationId/screenplay-revisions',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      query: StudioScreenplaySceneRevisionListQuerySchema,
+      responses: {
+        200: ApiResponseSchema(StudioScreenplaySceneRevisionListResponseSchema),
+      },
+      summary: 'List immutable screenplay scene revisions for an adaptation',
+    },
+    createScreenplaySceneRevision: {
+      method: 'POST',
+      path: '/adaptations/:adaptationId/screenplay-revisions',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      body: CreateStudioScreenplaySceneRevisionSchema,
+      responses: { 201: ApiResponseSchema(StudioScreenplaySceneRevisionSchema) },
+      summary: 'Save a new immutable screenplay scene revision (author-authored in M1)',
+    },
+    exportAdaptation: {
+      method: 'GET',
+      path: '/adaptations/:adaptationId/export',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      query: StudioAdaptationExportQuerySchema,
+      responses: { 200: ApiResponseSchema(StudioAdaptationExportSchema) },
+      summary:
+        'Export confirmed scene plans and their latest screenplay revisions as Fountain or txt',
     },
     exportProject: {
       method: 'GET',

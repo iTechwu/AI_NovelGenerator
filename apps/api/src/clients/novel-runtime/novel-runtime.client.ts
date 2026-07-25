@@ -5,10 +5,14 @@ import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import type { Logger } from 'winston';
 import { z } from 'zod';
 import {
+  ConsistencyReviewRequestSchema,
+  ConsistencyReviewResultSchema,
   CreateStudioProjectSchema,
   GenerationJobSchema,
   StudioBlueprintSchema,
   StudioChapterPlanSchema,
+  type ConsistencyReviewRequest,
+  type ConsistencyReviewResult,
   type CreateStudioChapterDraft,
   type CreateStudioProject,
   type GenerationJob,
@@ -135,6 +139,11 @@ export class NovelRuntimeClient {
       body,
       z.array(InternalHardFactReviewFindingSchema),
     );
+  }
+
+  async reviewConsistency(input: ConsistencyReviewRequest): Promise<ConsistencyReviewResult> {
+    const body = ConsistencyReviewRequestSchema.parse(input);
+    return this.request('post', '/v1/reviews/consistency', body, ConsistencyReviewResultSchema);
   }
 
   async createChapterDraftJob(

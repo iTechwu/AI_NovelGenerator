@@ -56,6 +56,8 @@ import type {
   StudioAdaptationDecision,
   StudioAdaptationSourceChapter,
   StudioScenePlan,
+  StudioScenePlanScene,
+  StudioSourceSceneMapping,
   StudioProjectListResponse,
   StudioProjectOverview,
   StudioProjectImportPreview,
@@ -131,6 +133,19 @@ const adaptationStatusLabel: Record<StudioAdaptationProject['status'], string> =
   script_writing: '剧本生成中',
   review_ready: '待对照审阅',
   deliverable: '可交付',
+};
+
+const scenePlanActLabel: Record<NonNullable<StudioScenePlanScene['act']>, string> = {
+  setup: '起',
+  development: '承',
+  twist: '转',
+  resolution: '合',
+};
+
+const sourceMappingStatusLabel: Record<StudioSourceSceneMapping['status'], string> = {
+  proposed: '待确认',
+  confirmed: '已确认',
+  stale: '待复核',
 };
 
 const initialChapterPlan: UpdateStudioChapterPlan = {
@@ -368,10 +383,35 @@ export function StudioWorkbench() {
   const [scenePlans, setScenePlans] = useState<StudioScenePlan[]>([]);
   const [isLoadingScenePlans, setIsLoadingScenePlans] = useState(false);
   const [isStartingScenePlanning, setIsStartingScenePlanning] = useState(false);
-  const [scenePlanDraft, setScenePlanDraft] = useState({ episodeNumber: 1, title: '', synopsis: '' });
+  const [isStartingScriptWriting, setIsStartingScriptWriting] = useState(false);
+  const [scenePlanDraft, setScenePlanDraft] = useState<{
+    episodeNumber: number;
+    title: string;
+    synopsis: string;
+    scenes: StudioScenePlanScene[];
+  }>({ episodeNumber: 1, title: '', synopsis: '', scenes: [] });
+  const [sceneDraft, setSceneDraft] = useState<{
+    title: string;
+    synopsis: string;
+    act: '' | NonNullable<StudioScenePlanScene['act']>;
+  }>({ title: '', synopsis: '', act: '' });
   const [isSavingScenePlan, setIsSavingScenePlan] = useState(false);
   const [confirmingScenePlanEpisode, setConfirmingScenePlanEpisode] = useState<number | null>(null);
   const [scenePlanError, setScenePlanError] = useState<string | null>(null);
+  const [sourceMappings, setSourceMappings] = useState<StudioSourceSceneMapping[]>([]);
+  const [isLoadingSourceMappings, setIsLoadingSourceMappings] = useState(false);
+  const [sourceMappingDraft, setSourceMappingDraft] = useState({
+    episodeNumber: 1,
+    sceneNumber: 1,
+    sourceChapterId: '',
+    evidenceAnchor: '',
+  });
+  const [isCreatingSourceMapping, setIsCreatingSourceMapping] = useState(false);
+  const [sourceMappingResolutionDrafts, setSourceMappingResolutionDrafts] = useState<
+    Record<string, { reason: string }>
+  >({});
+  const [resolvingSourceMappingId, setResolvingSourceMappingId] = useState<string | null>(null);
+  const [sourceMappingError, setSourceMappingError] = useState<string | null>(null);
   const selectedAdaptation = adaptations.find((item) => item.id === selectedAdaptationId) ?? null;
   const isAdaptationBriefEditable =
     !selectedAdaptation || selectedAdaptation.status === 'brief_draft';
@@ -487,6 +527,34 @@ export function StudioWorkbench() {
     }
   }, []);
 
+  const loadSourceSceneMappings = useCallback(async (adaptationId: string) => {
+    setIsLoadingSourceMappings(true);
+    setSourceMappingError(null);
+    try {
+      // Source chapters are needed as the anchor picker for new mappings, so
+      // refresh them alongside the mapping list (they are immutable per snapshot).
+      const [mappingResponse, chapterResponse] = await Promise.all([
+        studioClient.listSourceSceneMappings({
+          params: { adaptationId },
+          query: { page: 1, limit: 100 },
+        }),
+        studioClient.listAdaptationSourceChapters({
+          params: { adaptationId },
+          query: { page: 1, limit: 100 },
+        }),
+      ]);
+      if (mappingResponse.status === 200) setSourceMappings(mappingResponse.body.data.list);
+      if (chapterResponse.status === 200) setAdaptationSourceChapters(chapterResponse.body.data.list);
+      if (mappingResponse.status !== 200 || chapterResponse.status !== 200) {
+        setSourceMappingError('场景溯源暂时无法加载。');
+      }
+    } catch {
+      setSourceMappingError('场景溯源暂时无法加载。');
+    } finally {
+      setIsLoadingSourceMappings(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadProjects(), 0);
     return () => window.clearTimeout(timer);
@@ -509,21 +577,39 @@ export function StudioWorkbench() {
   }, [activeProjectId, loadAdaptations, loadProjectStatus]);
 
   useEffect(() => {
-    if (selectedAdaptation?.status === 'blueprint_review') {
-      void loadAdaptationDecisions(selectedAdaptation.id);
+    const status = selectedAdaptation?.status;
+    const adaptationId = selectedAdaptation?.id;
+    if (status === 'blueprint_review' && adaptationId) {
+      void loadAdaptationDecisions(adaptationId);
     } else {
       setAdaptationDecisions([]);
-      setAdaptationSourceChapters([]);
       setDecisionResolutionDrafts({});
       setDecisionForm(initialAdaptationDecisionForm);
     }
-    if (selectedAdaptation?.status === 'scene_planning') {
-      void loadScenePlans(selectedAdaptation.id);
+    if (status === 'scene_planning' && adaptationId) {
+      void loadScenePlans(adaptationId);
     } else {
       setScenePlans([]);
-      setScenePlanDraft({ episodeNumber: 1, title: '', synopsis: '' });
+      setScenePlanDraft({ episodeNumber: 1, title: '', synopsis: '', scenes: [] });
+      setSceneDraft({ title: '', synopsis: '', act: '' });
     }
-  }, [selectedAdaptation, loadAdaptationDecisions, loadScenePlans]);
+    if (
+      (status === 'scene_planning' || status === 'script_writing' || status === 'review_ready') &&
+      adaptationId
+    ) {
+      void loadSourceSceneMappings(adaptationId);
+    } else {
+      setSourceMappings([]);
+      setSourceMappingDraft({
+        episodeNumber: 1,
+        sceneNumber: 1,
+        sourceChapterId: '',
+        evidenceAnchor: '',
+      });
+      setSourceMappingResolutionDrafts({});
+      setAdaptationSourceChapters([]);
+    }
+  }, [selectedAdaptation, loadAdaptationDecisions, loadScenePlans, loadSourceSceneMappings]);
 
   useEffect(() => {
     if (!activeProjectId) return;
@@ -1217,6 +1303,27 @@ export function StudioWorkbench() {
     }
   };
 
+  const startScriptWriting = async () => {
+    if (!selectedAdaptation) return;
+    setIsStartingScriptWriting(true);
+    setScenePlanError(null);
+    try {
+      const response = await studioClient.startScriptWriting({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        setAdaptations((current) =>
+          current.map((item) => (item.id === response.body.data.id ? response.body.data : item)),
+        );
+      } else setScenePlanError('请先确认至少一集场景计划，再进入剧本生成。');
+    } catch {
+      setScenePlanError('进入剧本生成失败，请稍后重试。');
+    } finally {
+      setIsStartingScriptWriting(false);
+    }
+  };
+
   const saveScenePlan = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedAdaptation) return;
@@ -1232,7 +1339,10 @@ export function StudioWorkbench() {
         body: {
           title: scenePlanDraft.title.trim(),
           synopsis: scenePlanDraft.synopsis.trim(),
-          sceneOutline: [],
+          sceneOutline: scenePlanDraft.scenes.map((scene, index) => ({
+            ...scene,
+            sceneNumber: index + 1,
+          })),
         },
       });
       if (response.status === 200) {
@@ -1246,7 +1356,9 @@ export function StudioWorkbench() {
           episodeNumber: current.episodeNumber + 1,
           title: '',
           synopsis: '',
+          scenes: [],
         }));
+        setSceneDraft({ title: '', synopsis: '', act: '' });
       } else setScenePlanError('场景计划保存失败。');
     } catch {
       setScenePlanError('场景计划保存失败。');
@@ -1275,6 +1387,69 @@ export function StudioWorkbench() {
       setScenePlanError('场景计划确认失败。');
     } finally {
       setConfirmingScenePlanEpisode(null);
+    }
+  };
+
+  const createSourceSceneMapping = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedAdaptation) return;
+    if (!sourceMappingDraft.sourceChapterId) return;
+    setIsCreatingSourceMapping(true);
+    setSourceMappingError(null);
+    try {
+      const response = await studioClient.createSourceSceneMapping({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {
+          episodeNumber: sourceMappingDraft.episodeNumber,
+          sceneNumber: sourceMappingDraft.sceneNumber,
+          sourceChapterId: sourceMappingDraft.sourceChapterId,
+          evidenceAnchor: sourceMappingDraft.evidenceAnchor.trim() || undefined,
+        },
+      });
+      if (response.status === 201) {
+        setSourceMappings((current) => [response.body.data, ...current]);
+        setSourceMappingDraft((current) => ({
+          ...current,
+          sourceChapterId: '',
+          evidenceAnchor: '',
+        }));
+      } else setSourceMappingError('场景溯源记录失败，请核对集数与场景编号。');
+    } catch {
+      setSourceMappingError('场景溯源记录失败，请稍后重试。');
+    } finally {
+      setIsCreatingSourceMapping(false);
+    }
+  };
+
+  const resolveSourceSceneMapping = async (
+    mapping: StudioSourceSceneMapping,
+    status: 'confirmed' | 'stale',
+  ) => {
+    if (!selectedAdaptation) return;
+    const reason = sourceMappingResolutionDrafts[mapping.id]?.reason ?? '';
+    if (!reason.trim()) return;
+    setResolvingSourceMappingId(mapping.id);
+    setSourceMappingError(null);
+    try {
+      const response = await studioClient.resolveSourceSceneMapping({
+        params: { adaptationId: selectedAdaptation.id, mappingId: mapping.id },
+        body: { status, reason: reason.trim() },
+      });
+      if (response.status === 200) {
+        setSourceMappings((current) =>
+          current.map((item) => (item.id === mapping.id ? response.body.data : item)),
+        );
+        setSourceMappingResolutionDrafts((current) => {
+          if (!current[mapping.id]) return current;
+          const next = { ...current };
+          delete next[mapping.id];
+          return next;
+        });
+      } else setSourceMappingError('场景溯源处理失败。');
+    } catch {
+      setSourceMappingError('场景溯源处理失败。');
+    } finally {
+      setResolvingSourceMappingId(null);
     }
   };
 
@@ -2516,6 +2691,107 @@ export function StudioWorkbench() {
                                     placeholder="概述本集起承转合与关键场景。"
                                   />
                                 </div>
+                                <div className="grid gap-2">
+                                  <span className="text-xs font-medium text-muted-foreground">
+                                    场景表（{scenePlanDraft.scenes.length}）
+                                  </span>
+                                  {scenePlanDraft.scenes.map((scene, index) => (
+                                    <div key={index} className="grid gap-1 rounded-md border p-2 text-xs">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="font-medium">
+                                          场景 {index + 1}
+                                          {scene.act ? ` · ${scenePlanActLabel[scene.act]}` : ''}
+                                        </span>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() =>
+                                            setScenePlanDraft((current) => ({
+                                              ...current,
+                                              scenes: current.scenes.filter((_, i) => i !== index),
+                                            }))
+                                          }
+                                        >
+                                          移除
+                                        </Button>
+                                      </div>
+                                      <p className="font-medium">{scene.title}</p>
+                                      <p className="text-muted-foreground">{scene.synopsis}</p>
+                                    </div>
+                                  ))}
+                                  <div className="grid gap-2 rounded-md border border-dashed p-2">
+                                    <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
+                                      <Input
+                                        aria-label="新场景标题"
+                                        value={sceneDraft.title}
+                                        onChange={(event) =>
+                                          setSceneDraft((current) => ({ ...current, title: event.target.value }))
+                                        }
+                                        maxLength={200}
+                                        placeholder="场景标题"
+                                      />
+                                      <Select
+                                        value={sceneDraft.act}
+                                        onValueChange={(value) =>
+                                          setSceneDraft((current) => ({
+                                            ...current,
+                                            act: value as NonNullable<StudioScenePlanScene['act']>,
+                                          }))
+                                        }
+                                      >
+                                        <SelectTrigger aria-label="新场景幕次" className="w-full">
+                                          <SelectValue placeholder="幕次" />
+                                        </SelectTrigger>
+                                        <SelectContent position="popper">
+                                          <SelectItem value="setup">起</SelectItem>
+                                          <SelectItem value="development">承</SelectItem>
+                                          <SelectItem value="twist">转</SelectItem>
+                                          <SelectItem value="resolution">合</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <Input
+                                      aria-label="新场景梗概"
+                                      value={sceneDraft.synopsis}
+                                      onChange={(event) =>
+                                        setSceneDraft((current) => ({
+                                          ...current,
+                                          synopsis: event.target.value,
+                                        }))
+                                      }
+                                      maxLength={5000}
+                                      placeholder="场景梗概"
+                                    />
+                                    <div className="flex justify-end">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={!sceneDraft.title.trim() || !sceneDraft.synopsis.trim()}
+                                        onClick={() => {
+                                          setScenePlanDraft((current) => ({
+                                            ...current,
+                                            scenes: [
+                                              ...current.scenes,
+                                              {
+                                                sceneNumber: current.scenes.length + 1,
+                                                title: sceneDraft.title.trim(),
+                                                synopsis: sceneDraft.synopsis.trim(),
+                                                act: sceneDraft.act || undefined,
+                                                sourceChapterIds: [],
+                                              },
+                                            ],
+                                          }));
+                                          setSceneDraft({ title: '', synopsis: '', act: '' });
+                                        }}
+                                      >
+                                        <Plus />
+                                        添加场景
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </div>
                                 <div className="flex justify-end">
                                   <Button
                                     type="submit"
@@ -2562,6 +2838,16 @@ export function StudioWorkbench() {
                                     <p className="whitespace-pre-wrap text-muted-foreground">
                                       {plan.synopsis}
                                     </p>
+                                    {plan.sceneOutline.length > 0 && (
+                                      <ul className="grid gap-1 text-xs text-muted-foreground">
+                                        {plan.sceneOutline.map((scene) => (
+                                          <li key={scene.sceneNumber}>
+                                            场景 {scene.sceneNumber}
+                                            {scene.act ? ` · ${scenePlanActLabel[scene.act]}` : ''}：{scene.title}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    )}
                                     {plan.needsReview && (
                                       <p className="text-xs text-destructive">
                                         上游取舍或来源变更，请复核后再确认。
@@ -2584,6 +2870,233 @@ export function StudioWorkbench() {
                                           确认本集计划
                                         </Button>
                                       </div>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                              <div className="flex justify-end">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  disabled={isStartingScriptWriting}
+                                  onClick={() => void startScriptWriting()}
+                                >
+                                  {isStartingScriptWriting ? (
+                                    <LoaderCircle className="animate-spin" />
+                                  ) : (
+                                    <ArrowRight />
+                                  )}
+                                  进入剧本生成
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                          {['scene_planning', 'script_writing', 'review_ready'].includes(
+                            selectedAdaptation?.status ?? '',
+                          ) && (
+                            <div
+                              id="adaptation-source-mappings"
+                              className="grid gap-4 border-t pt-5"
+                              aria-labelledby="adaptation-source-mappings-heading"
+                            >
+                              <div>
+                                <p
+                                  id="adaptation-source-mappings-heading"
+                                  className="text-sm font-semibold"
+                                >
+                                  场景溯源
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                  把每个场景锚定到不可变来源章节；来源或取舍变更后，对应溯源会进入待复核。
+                                </p>
+                              </div>
+                              <form
+                                className="grid gap-3 rounded-md border p-3"
+                                onSubmit={createSourceSceneMapping}
+                              >
+                                <div className="grid gap-3 sm:grid-cols-[100px_100px_1fr]">
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="source-mapping-episode">集数</Label>
+                                    <Input
+                                      id="source-mapping-episode"
+                                      type="number"
+                                      min={1}
+                                      max={100}
+                                      value={sourceMappingDraft.episodeNumber}
+                                      onChange={(event) =>
+                                        setSourceMappingDraft((current) => ({
+                                          ...current,
+                                          episodeNumber: Number(event.target.value),
+                                        }))
+                                      }
+                                      required
+                                    />
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="source-mapping-scene">场景</Label>
+                                    <Input
+                                      id="source-mapping-scene"
+                                      type="number"
+                                      min={1}
+                                      max={200}
+                                      value={sourceMappingDraft.sceneNumber}
+                                      onChange={(event) =>
+                                        setSourceMappingDraft((current) => ({
+                                          ...current,
+                                          sceneNumber: Number(event.target.value),
+                                        }))
+                                      }
+                                      required
+                                    />
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="source-mapping-chapter">来源章节</Label>
+                                    <Select
+                                      value={sourceMappingDraft.sourceChapterId}
+                                      onValueChange={(value) =>
+                                        setSourceMappingDraft((current) => ({
+                                          ...current,
+                                          sourceChapterId: value,
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger id="source-mapping-chapter" className="w-full">
+                                        <SelectValue placeholder="选择来源章节" />
+                                      </SelectTrigger>
+                                      <SelectContent position="popper">
+                                        {adaptationSourceChapters.map((chapter) => (
+                                          <SelectItem key={chapter.id} value={chapter.id}>
+                                            第 {chapter.chapterNumber} 章 · {chapter.title}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                                <div className="grid gap-1.5">
+                                  <Label htmlFor="source-mapping-evidence">证据锚点（可选）</Label>
+                                  <Input
+                                    id="source-mapping-evidence"
+                                    value={sourceMappingDraft.evidenceAnchor}
+                                    onChange={(event) =>
+                                      setSourceMappingDraft((current) => ({
+                                        ...current,
+                                        evidenceAnchor: event.target.value,
+                                      }))
+                                    }
+                                    maxLength={5000}
+                                    placeholder="例如：第 2 章码头重逢段落。"
+                                  />
+                                </div>
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      isCreatingSourceMapping ||
+                                      adaptationSourceChapters.length === 0 ||
+                                      !sourceMappingDraft.sourceChapterId
+                                    }
+                                  >
+                                    {isCreatingSourceMapping ? (
+                                      <LoaderCircle className="animate-spin" />
+                                    ) : (
+                                      <Plus />
+                                    )}
+                                    记录溯源
+                                  </Button>
+                                </div>
+                              </form>
+                              {sourceMappingError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {sourceMappingError}
+                                </p>
+                              )}
+                              {isLoadingSourceMappings && <Skeleton className="h-16 w-full" />}
+                              {!isLoadingSourceMappings && sourceMappings.length === 0 && (
+                                <p className="text-sm text-muted-foreground">
+                                  还没有场景溯源。把场景锚定到来源章节后即可追溯改编依据。
+                                </p>
+                              )}
+                              <ul className="grid gap-2">
+                                {sourceMappings.map((mapping) => (
+                                  <li
+                                    key={mapping.id}
+                                    className="grid gap-2 border-l-2 border-primary/50 pl-3 text-sm"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge
+                                        variant={
+                                          mapping.status === 'stale' ? 'destructive' : 'outline'
+                                        }
+                                      >
+                                        {sourceMappingStatusLabel[mapping.status]}
+                                      </Badge>
+                                      <span className="text-xs text-muted-foreground">
+                                        第 {mapping.episodeNumber} 集 · 场景 {mapping.sceneNumber} ← 来源
+                                        第 {mapping.sourceChapter.chapterNumber} 章 ·{' '}
+                                        {mapping.sourceChapter.title}
+                                      </span>
+                                    </div>
+                                    {mapping.evidenceAnchor && (
+                                      <p className="text-xs text-muted-foreground">
+                                        证据：{mapping.evidenceAnchor}
+                                      </p>
+                                    )}
+                                    {mapping.status === 'proposed' && (
+                                      <>
+                                        <Input
+                                          aria-label={`溯源处理理由 ${mapping.id}`}
+                                          value={
+                                            sourceMappingResolutionDrafts[mapping.id]?.reason ?? ''
+                                          }
+                                          maxLength={5000}
+                                          onChange={(event) =>
+                                            setSourceMappingResolutionDrafts((current) => ({
+                                              ...current,
+                                              [mapping.id]: { reason: event.target.value },
+                                            }))
+                                          }
+                                          placeholder="填写确认/复核理由"
+                                        />
+                                        <div className="flex flex-wrap gap-2">
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={
+                                              resolvingSourceMappingId === mapping.id ||
+                                              !(
+                                                sourceMappingResolutionDrafts[mapping.id]?.reason ??
+                                                ''
+                                              ).trim()
+                                            }
+                                            onClick={() =>
+                                              void resolveSourceSceneMapping(mapping, 'confirmed')
+                                            }
+                                          >
+                                            确认溯源
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={
+                                              resolvingSourceMappingId === mapping.id ||
+                                              !(
+                                                sourceMappingResolutionDrafts[mapping.id]?.reason ??
+                                                ''
+                                              ).trim()
+                                            }
+                                            onClick={() =>
+                                              void resolveSourceSceneMapping(mapping, 'stale')
+                                            }
+                                          >
+                                            标记待复核
+                                          </Button>
+                                        </div>
+                                      </>
                                     )}
                                   </li>
                                 ))}

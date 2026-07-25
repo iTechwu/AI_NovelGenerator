@@ -299,6 +299,54 @@ export const StudioSourceSceneMappingListResponseSchema = PaginatedResponseSchem
   StudioSourceSceneMappingSchema,
 );
 
+export const StudioScreenplayRevisionSourceSchema = z.enum(['author', 'ai']);
+
+export const StudioScreenplaySceneRevisionSchema = z.object({
+  id: z.string().uuid(),
+  adaptationId: z.string().uuid(),
+  scenePlanId: z.string().uuid(),
+  episodeNumber: z.number().int().positive(),
+  sceneNumber: z.number().int().positive(),
+  source: StudioScreenplayRevisionSourceSchema,
+  sourceRevisionId: z.string().uuid().nullable(),
+  version: z.number().int().positive(),
+  content: z.string(),
+  contentHash: z.string(),
+  wordCount: z.number().int().nonnegative(),
+  editSummary: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+
+export const CreateStudioScreenplaySceneRevisionSchema = z.object({
+  episodeNumber: z.coerce.number().int().min(1),
+  sceneNumber: z.coerce.number().int().min(1),
+  sourceRevisionId: z.string().uuid().optional(),
+  content: z.string().trim().min(1).max(50_000),
+  editSummary: z.string().trim().max(500).optional(),
+});
+
+export const StudioScreenplaySceneRevisionListQuerySchema = PaginationQuerySchema.extend({
+  episodeNumber: z.coerce.number().int().min(1).optional(),
+  sceneNumber: z.coerce.number().int().min(1).optional(),
+});
+export const StudioScreenplaySceneRevisionListResponseSchema = PaginatedResponseSchema(
+  StudioScreenplaySceneRevisionSchema,
+);
+
+export const StudioAdaptationExportQuerySchema = z.object({
+  format: z.enum(['fountain', 'txt']).default('fountain'),
+});
+
+// PRD AC-13: exported screenplay records format, version and source snapshot.
+export const StudioAdaptationExportSchema = z.object({
+  filename: z.string(),
+  contentType: z.literal('text/plain'),
+  content: z.string(),
+  sourceSnapshotId: z.string().uuid(),
+  episodeCount: z.number().int().nonnegative(),
+  warnings: z.array(z.string()),
+});
+
 export const StudioProjectImportResultSchema = z.object({
   importId: z.string().uuid(),
   project: StudioProjectSummarySchema,
@@ -595,10 +643,12 @@ export const GenerationJobSchema = z.object({
   progress: z.number().int().min(0).max(100),
   currentStep: z.string(),
   attemptCount: z.number().int().nonnegative().default(0),
-  artifact: StudioArtifactSchema.optional(),
-  revisionId: z.string().uuid().optional(),
-  modelConfig: z.record(z.string(), z.string()).optional(),
-  error: z.string().optional(),
+  // Python's Pydantic serializer includes null for unset optional fields.
+  // Normalize these fields so both runtime and API callers receive one shape.
+  artifact: StudioArtifactSchema.nullish().transform((value) => value ?? undefined),
+  revisionId: z.string().uuid().nullish().transform((value) => value ?? undefined),
+  modelConfig: z.record(z.string(), z.string()).nullish().transform((value) => value ?? undefined),
+  error: z.string().nullish().transform((value) => value ?? undefined),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -609,6 +659,18 @@ export const StudioProjectLatestRunSchema = z.object({
   progress: z.number().int().min(0).max(100),
   currentStep: z.string(),
   updatedAt: z.string().datetime(),
+});
+
+// Python runtime: LLM consistency review of a chapter vs setting/state/summary.
+export const ConsistencyReviewRequestSchema = z.object({
+  novelSetting: z.string().max(20_000).default(''),
+  characterState: z.string().max(20_000).default(''),
+  globalSummary: z.string().max(20_000).default(''),
+  chapterText: z.string().min(1).max(200_000),
+  plotArcs: z.string().max(10_000).default(''),
+});
+export const ConsistencyReviewResultSchema = z.object({
+  report: z.string(),
 });
 
 export const StudioProjectListItemSchema = StudioProjectSummarySchema.extend({
@@ -743,6 +805,20 @@ export type StudioSourceSceneMappingListQuery = z.infer<
 export type StudioSourceSceneMappingListResponse = z.infer<
   typeof StudioSourceSceneMappingListResponseSchema
 >;
+export type StudioScreenplaySceneRevision = z.infer<
+  typeof StudioScreenplaySceneRevisionSchema
+>;
+export type CreateStudioScreenplaySceneRevision = z.infer<
+  typeof CreateStudioScreenplaySceneRevisionSchema
+>;
+export type StudioScreenplaySceneRevisionListQuery = z.infer<
+  typeof StudioScreenplaySceneRevisionListQuerySchema
+>;
+export type StudioScreenplaySceneRevisionListResponse = z.infer<
+  typeof StudioScreenplaySceneRevisionListResponseSchema
+>;
+export type StudioAdaptationExportQuery = z.infer<typeof StudioAdaptationExportQuerySchema>;
+export type StudioAdaptationExport = z.infer<typeof StudioAdaptationExportSchema>;
 export type StudioFactProposal = z.infer<typeof StudioFactProposalSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type StudioBlueprint = z.infer<typeof StudioBlueprintSchema>;
@@ -750,6 +826,8 @@ export type StudioBlueprintListQuery = z.infer<typeof StudioBlueprintListQuerySc
 export type StudioBlueprintListResponse = z.infer<typeof StudioBlueprintListResponseSchema>;
 export type UpdateStudioBlueprint = z.infer<typeof UpdateStudioBlueprintSchema>;
 export type StudioChapterPlan = z.infer<typeof StudioChapterPlanSchema>;
+export type ConsistencyReviewRequest = z.infer<typeof ConsistencyReviewRequestSchema>;
+export type ConsistencyReviewResult = z.infer<typeof ConsistencyReviewResultSchema>;
 export type UpdateStudioChapterPlan = z.infer<typeof UpdateStudioChapterPlanSchema>;
 export type CreateStudioChapterDraft = z.infer<typeof CreateStudioChapterDraftSchema>;
 export type CreateStudioAuthorRevision = z.infer<typeof CreateStudioAuthorRevisionSchema>;

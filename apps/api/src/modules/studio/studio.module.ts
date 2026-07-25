@@ -23,6 +23,7 @@ import {
   StudioAdaptationDecisionModule,
   StudioScenePlanModule,
   StudioSourceSceneMappingModule,
+  StudioScreenplaySceneRevisionModule,
 } from '@app/db';
 import { NovelRuntimeClientModule } from '../../clients/novel-runtime/novel-runtime-client.module';
 import { AuditLogModule } from '@app/audit-log';
@@ -44,6 +45,7 @@ import { StudioService } from './studio.service';
     StudioAdaptationDecisionModule,
     StudioScenePlanModule,
     StudioSourceSceneMappingModule,
+    StudioScreenplaySceneRevisionModule,
     StudioGenerationRunModule,
     StudioBlueprintModule,
     StudioChapterPlanModule,

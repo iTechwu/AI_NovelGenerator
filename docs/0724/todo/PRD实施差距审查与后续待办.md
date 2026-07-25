@@ -360,3 +360,46 @@ P0-01 正文修订
 - 已通过质量门禁（与本轮相关）：`check:architecture`（无 `any`）、`check:list-contracts`（C54/C56/C58 新增的 source-chapters、scene-plans、source-mappings 分页端点均遵循 `PaginatedResponseSchema` 标准模式）、`check:sensitive-logs`、`check:utils-hygiene`、`check:cross-project-boundaries` 全部 PASS。
 - 仍待实施（非本轮代码可完成）：(1) 三份新增迁移（`studio_scene_plans`、`studio_source_scene_mappings` 及枚举）须先在隔离 PostgreSQL 演练再部署；(2) 逐场剧本生成运行时、来源更新自动标 stale、剧本导出（Fountain/txt）、差异审阅与 P12 独立三栏工作台仍属改编管线后续；(3) 独立页面路由与导航验收、真实作者可用性测试与 M1 准入数据采集需部署或用户研究环境。
 - 已知既存阻断（与本轮无关，未修改）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 文件报告 70 条连带错误；`backend/tests/test_runtime_api.py` 当前 8 项失败，源于工作区中既有的、非本轮 authored 的 `backend/runtime/engine.py` 多模型 `RuntimeSettings` 改动（新增 `model_architecture/model_outline/model_chapter_draft/model_consistency_review` 必填字段），属独立的 Python 运行时多模型改造工作流，C54-C58 的 TypeScript 改动不可能影响该结果，未在本轮触碰 `backend/`。
+
+### C60 实施与复核：场景计划结构化场景表（P13 场景表）
+
+- 已实施（Web，2026-07-25）：场景计划工作台支持结构化「场景表」编辑——在按集计划表单内增删场景（标题、梗概、起承转合幕次），保存时按序重排 `sceneNumber` 后随 `sceneOutline` 一并写入（此前 C57 仅发送空 `sceneOutline`）。已保存计划在列表中逐场展示标题与幕次。
+- 设计意图：场景表是 C58 溯源映射（按 `sceneNumber` 锚定来源章节）与后续逐场剧本生成的输入前提；本轮补齐结构化输入，使 mapping/剧本生成不再因「无场景」被阻断。
+- 已通过：Web studio 测试 20 项（+1，覆盖添加场景后 `sceneOutline` 写回）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：场景幕次依赖工作台内 Select（测试以非交互 mock 覆盖），P12 独立三栏工作台的逐场编辑、来源章节在场景级直接锚定、逐场剧本生成运行时仍属后续。
+
+### C61 实施与复核：原作-场景溯源工作台（P13 溯源/对照）
+
+- 已实施（Web，2026-07-25）：工作台在 `scene_planning` 及之后阶段加载并展示「场景溯源」面板，消费 C58 的 `listSourceSceneMappings/createSourceSceneMapping/resolveSourceSceneMapping`：记录表单（集数、场景号、来源章节下拉、可选证据锚点）、按状态徽章（待确认/已确认/待复核）列出每条溯源、逐条裁决（确认溯源 / 标记待复核 + 理由）。来源章节在进入该阶段时随溯源一并刷新，供下拉锚定。
+- 已通过：Web studio 测试 21 项（+1，覆盖进入场景计划后加载溯源、逐条确认写回）、`apps/web` `tsc --noEmit` 类型检查通过（修正了 effect 中 `selectedAdaptation` 可空 narrowing）。
+- 待实施：来源章节在场景级直接锚定（当前需手填集数/场景号，由后端校验存在性）、来源更新自动标 stale、对照审阅三栏布局、逐场剧本生成运行时与剧本导出仍属改编管线后续。
+
+### C62 实施与复核：场景剧本不可变修订（P12 剧本基础）
+
+- 已实施（数据，2026-07-25）：新增只追加 `StudioScreenplaySceneRevision` 模型与 `StudioScreenplayRevisionSource` 枚举（author/ai）及迁移 `20260725210000_studio_screenplay_scene_revisions`：按场景保存不可变、按版本递增的剧本正文（Fountain 文本、哈希、字数、可选编辑摘要与来源版本），`(scenePlanId, sceneNumber, version)` 唯一约束保证版本不冲突。`pnpm db:generate` 已生成 DB service 模块并注册入 StudioModule。M1 仅产出 author 来源；AI 来源预留给后续逐场生成运行时。
+- 已实施（契约/API，2026-07-25）：新增 `GET/POST /adaptations/:adaptationId/screenplay-revisions`。创建时校验所有权、改编已过蓝图阶段、目标集与 `sceneNumber` 真实存在于场景表（拒绝为未规划场景写剧本），版本号取该场景现有最大版本 +1，永不原地更新历史；记录审计。
+- 已通过：契约 studio 测试 9 项、`apps/api` studio 测试 56 项（服务 52 + worker 4；+1，覆盖版本递增/哈希写入与未知场景拒绝）、API `tsconfig.type-check.json` 与 contracts `tsc --noEmit` 类型检查通过。
+- 待实施：剧本修订尚无前端消费；逐场剧本生成运行时（AI 来源）、剧本导出与 P12 独立三栏工作台仍属改编管线后续。新增迁移须在隔离 PostgreSQL 演练后再部署。
+
+### C63 实施与复核：进入剧本生成的受控状态推进
+
+- 已实施（契约/API，2026-07-25）：新增 `POST /adaptations/:adaptationId/script-writing/start`，将 `scene_planning` 推进至 `script_writing`；门禁为「至少一集已确认（`confirmedAt` 非空）的场景计划」，否则返回明确业务校验，落实 PRD「确认计划后进入场景剧本」。状态推进写入审计，不引入新迁移。
+- 已实施（Web，2026-07-25）：场景计划面板在 `scene_planning` 阶段提供「进入剧本生成」入口，成功后用返回对象更新作品库状态并切到剧本生成阶段，失败回显服务端校验原因。
+- 已通过：`apps/api` studio 测试 57 项（服务 53 + worker 4；+1，覆盖无确认计划阻断与确认后推进）、Web studio 测试 22 项（+1，覆盖进入剧本生成入口）、API `tsconfig.type-check.json` 与 `apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：剧本修订前端编辑器、逐场剧本生成运行时（AI 来源）、剧本导出与 P12 独立三栏工作台仍属改编管线后续。
+
+### C64 实施与复核：改编剧本导出（Fountain/txt，AC-13 可交付）
+
+- 已实施（契约/API，2026-07-25）：新增 `GET /adaptations/:adaptationId/export?format=fountain|txt`。仅导出已确认（`confirmedAt` 非空）的场景计划：按集升序、每集含标题与梗概，每个场景拼接其最新版本剧本修订（无则占位并计入 warning）；响应记录 `sourceSnapshotId`、`episodeCount`、`filename`、`contentType` 与 warnings，满足 PRD AC-13「仅导出已确认场景、记录格式/版本/来源快照」。无已确认计划时拒绝导出。导出写入审计。
+- 设计意图：在逐场生成运行时（AI）落地前，作者已可用 author 来源剧本修订 + 导出产出可交付剧本；warning 标注未编写场景，不阻断导出。
+- 已通过：契约 studio 测试 9 项、`apps/api` studio 测试 59 项（服务 55 + worker 4；+2，覆盖 Fountain 导出内容/来源快照回传与无确认计划拒绝）、API `tsconfig.type-check.json` 与 contracts `tsc --noEmit` 类型检查通过。
+- 待实施：剧本导出尚无前端下载入口；逐场剧本生成运行时（AI 来源）、来源更新自动标 stale、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续。
+
+### C65 复核结论：C60-C64 改编 M1 收尾（场景表 → 溯源 → 剧本 → 导出）
+
+- 本轮沿 PRD 第 38 章「小说转剧本」继续推进 5 个增量（C60-C64），将改编管线从 `scene_planning` 推进至 `script_writing` 与可交付导出，闭合 M1「场景表 → 原作-场景溯源 → 场景剧本（author 不可变修订）→ Fountain/txt 导出」主路径。所有写入仍走 Zod-first 契约、DB service 层与审计；C58/C62 的溯源与剧本模型均为只追加、按版本递增、永不原地改写历史。
+- 已通过：`pnpm test`（`apps/api` studio 59 = 服务 55 + worker 4；`apps/web` studio 22；`packages/contracts` 含 C59 修复后的契约守卫，全绿）、`pnpm type-check` 6/6、`git diff --check` 干净。
+- 已通过质量门禁（与本轮相关）：`check:architecture`（无 `any`）、`check:list-contracts`（C62/C64 的 screenplay-revisions 与 export 均遵循标准分页/响应模式）、`check:sensitive-logs`、`check:cross-project-boundaries` 全部 PASS。
+- 本会话（C54-C64）累计新增 3 份迁移：`20260725180000_studio_scene_plans`、`20260725200000_studio_source_scene_mappings`、`20260725210000_studio_screenplay_scene_revisions`（含 `studio_source_mapping_status`、`studio_screenplay_revision_source` 枚举）。
+- 仍待实施（非本轮代码可完成）：(1) 三份迁移须先在隔离 PostgreSQL 演练再部署；(2) 剧本修订前端编辑器、剧本导出前端下载入口、逐场剧本生成运行时（AI 来源）、来源更新自动标 stale、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续；(3) 独立页面路由、真实作者可用性测试与 M1 准入数据采集需部署或用户研究环境。
+- 已知既存阻断（与本轮无关，状态与 C59 一致）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 报告 70 条连带错误；`backend/tests/test_runtime_api.py` 8 项失败仍源于工作区既有的 `backend/runtime/engine.py` 多模型 `RuntimeSettings` 改动，C60-C64 的 TypeScript 改动不可能影响该结果，未触碰 `backend/`。
