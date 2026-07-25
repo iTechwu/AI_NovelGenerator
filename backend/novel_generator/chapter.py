@@ -12,10 +12,6 @@ import prompt_definitions
 from chapter_directory_parser import get_chapter_info_from_blueprint
 from novel_generator.common import invoke_with_cleaning
 from utils import read_file, clear_file_content, save_string_to_txt
-from novel_generator.vectorstore_utils import (
-    get_relevant_context_from_vector_store,
-    load_vector_store  # 添加导入
-)
 logging.basicConfig(
     filename='app.log',      # 日志文件名
     filemode='a',            # 追加模式（'w' 会覆盖）
@@ -429,6 +425,10 @@ def build_chapter_prompt(
         # 执行向量检索
         all_contexts = []
         from embedding_adapters import create_embedding_adapter
+        from novel_generator.vectorstore_utils import (  # lazy: keeps summarize_recent_chapters import numpy-free
+            get_relevant_context_from_vector_store,
+            load_vector_store,
+        )
         embedding_adapter = create_embedding_adapter(
             embedding_interface_format,
             embedding_api_key,

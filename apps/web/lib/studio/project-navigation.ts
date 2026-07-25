@@ -1,6 +1,8 @@
 export const PROJECT_NAVIGATION_EVENT = 'hanlin:project-navigation';
 
 export interface ProjectNavigationState {
+  projectId?: string;
+  projectFormat?: 'novel' | 'screenplay';
   hasProject: boolean;
   hasBlueprint: boolean;
   hasChapterWorkspace: boolean;

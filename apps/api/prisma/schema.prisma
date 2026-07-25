@@ -464,8 +464,8 @@ model StudioProject {
   updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   runs                      StudioGenerationRun[]
-  blueprints                StudioBlueprint[]                @relation("StudioProjectBlueprints")
-  currentBlueprint          StudioBlueprint?                 @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
+  blueprints                StudioBlueprint[]                    @relation("StudioProjectBlueprints")
+  currentBlueprint          StudioBlueprint?                     @relation("StudioProjectCurrentBlueprint", fields: [currentBlueprintId], references: [id], onDelete: SetNull)
   chapterPlans              StudioChapterPlan[]
   chapterRevisions          StudioChapterRevision[]
   chapterDraftPointers      StudioChapterDraftPointer[]
@@ -478,8 +478,10 @@ model StudioProject {
   reviewFindings            StudioReviewFinding[]
   imports                   StudioProjectImport[]
   events                    StudioProjectEvent[]
-  adaptations               StudioAdaptationProject[]        @relation("StudioAdaptationSourceProject")
-  adaptationSnapshots       StudioAdaptationSourceSnapshot[] @relation("StudioAdaptationSnapshotSourceProject")
+  adaptations               StudioAdaptationProject[]            @relation("StudioAdaptationSourceProject")
+  adaptationSnapshots       StudioAdaptationSourceSnapshot[]     @relation("StudioAdaptationSnapshotSourceProject")
+  screenplayScenes          StudioStandaloneScreenplayScene[]
+  screenplayRevisions       StudioStandaloneScreenplayRevision[]
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@map("studio_projects")
@@ -531,14 +533,16 @@ model StudioAdaptationProject {
   mustPreserve      String                       @default("") @map("must_preserve") @db.Text
   rightsConfirmedAt DateTime                     @map("rights_confirmed_at") @db.Timestamptz(6)
   status            StudioAdaptationStatus       @default(BRIEF_DRAFT)
+  currentSnapshotId String?                      @unique @map("current_snapshot_id") @db.Uuid
   createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  sourceProject  StudioProject                   @relation("StudioAdaptationSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
-  sourceSnapshot StudioAdaptationSourceSnapshot?
-  decisions      StudioAdaptationDecision[]
-  scenePlans     StudioScenePlan[]
-  sourceMappings StudioSourceSceneMapping[]
+  sourceProject       StudioProject                    @relation("StudioAdaptationSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
+  snapshots           StudioAdaptationSourceSnapshot[] @relation("AdaptationSnapshots")
+  currentSnapshot     StudioAdaptationSourceSnapshot?  @relation("CurrentAdaptationSnapshot", fields: [currentSnapshotId], references: [id], onDelete: Restrict)
+  decisions           StudioAdaptationDecision[]
+  scenePlans          StudioScenePlan[]
+  sourceMappings      StudioSourceSceneMapping[]
   screenplayRevisions StudioScreenplaySceneRevision[]
 
   @@index([ownerId, createdAt(sort: Desc)])
@@ -548,20 +552,24 @@ model StudioAdaptationProject {
 
 // Source text is copied when an author starts an adaptation. Later edits to
 // the novel cannot silently change the material used for screenplay work.
+// Re-snapshotting (PRD P13 来源更新复核) appends a new row and repoints
+// currentSnapshotId — prior snapshots stay immutable and queryable.
 model StudioAdaptationSourceSnapshot {
   id                     String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  adaptationId           String   @unique @map("adaptation_id") @db.Uuid
+  adaptationId           String   @map("adaptation_id") @db.Uuid
   sourceProjectId        String   @map("source_project_id") @db.Uuid
   sourceProjectTitle     String   @map("source_project_title") @db.VarChar(120)
   sourceProjectUpdatedAt DateTime @map("source_project_updated_at") @db.Timestamptz(6)
   sourceChapterCount     Int      @map("source_chapter_count")
   createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  adaptation    StudioAdaptationProject         @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
-  sourceProject StudioProject                   @relation("StudioAdaptationSnapshotSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
-  chapters      StudioAdaptationSourceChapter[]
-  decisions     StudioAdaptationDecision[]
+  adaptation           StudioAdaptationProject         @relation("AdaptationSnapshots", fields: [adaptationId], references: [id], onDelete: Restrict)
+  currentForAdaptation StudioAdaptationProject?        @relation("CurrentAdaptationSnapshot")
+  sourceProject        StudioProject                   @relation("StudioAdaptationSnapshotSourceProject", fields: [sourceProjectId], references: [id], onDelete: Restrict)
+  chapters             StudioAdaptationSourceChapter[]
+  decisions            StudioAdaptationDecision[]
 
+  @@index([adaptationId, createdAt(sort: Desc)])
   @@index([sourceProjectId, createdAt(sort: Desc)])
   @@map("studio_adaptation_source_snapshots")
 }
@@ -616,19 +624,19 @@ model StudioAdaptationDecision {
 // generation and source-scene mapping stay traceable. `needsReview` is set when
 // upstream decisions or the source snapshot change, blocking scene confirmation.
 model StudioScenePlan {
-  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  adaptationId  String   @map("adaptation_id") @db.Uuid
-  episodeNumber Int      @map("episode_number") @db.SmallInt
-  title         String   @db.VarChar(200)
-  synopsis      String   @db.Text
+  id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId  String    @map("adaptation_id") @db.Uuid
+  episodeNumber Int       @map("episode_number") @db.SmallInt
+  title         String    @db.VarChar(200)
+  synopsis      String    @db.Text
   sceneOutline  Json
-  needsReview   Boolean  @default(false) @map("needs_review")
+  needsReview   Boolean   @default(false) @map("needs_review")
   confirmedAt   DateTime? @map("confirmed_at") @db.Timestamptz(6)
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  adaptation StudioAdaptationProject @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
-  sourceMappings StudioSourceSceneMapping[]
+  adaptation          StudioAdaptationProject         @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
+  sourceMappings      StudioSourceSceneMapping[]
   screenplayRevisions StudioScreenplaySceneRevision[]
 
   @@unique([adaptationId, episodeNumber])
@@ -641,19 +649,19 @@ model StudioScenePlan {
 // stored in `content`. Mirrors the StudioChapterRevision immutability contract
 // so every screenplay draft is comparable and recoverable (PRD P12).
 model StudioScreenplaySceneRevision {
-  id              String                            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
-  adaptationId    String                            @map("adaptation_id") @db.Uuid
-  scenePlanId     String                            @map("scene_plan_id") @db.Uuid
-  episodeNumber   Int                               @map("episode_number") @db.SmallInt
-  sceneNumber     Int                               @map("scene_number") @db.SmallInt
-  source          StudioScreenplayRevisionSource   @default(AUTHOR)
-  sourceRevisionId String?                          @map("source_revision_id") @db.Uuid
-  version         Int                               @db.SmallInt
-  content         String                            @db.Text
-  contentHash     String                            @map("content_hash") @db.Char(64)
-  wordCount       Int                               @map("word_count")
-  editSummary     String?                           @map("edit_summary") @db.VarChar(500)
-  createdAt       DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  id               String                         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  adaptationId     String                         @map("adaptation_id") @db.Uuid
+  scenePlanId      String                         @map("scene_plan_id") @db.Uuid
+  episodeNumber    Int                            @map("episode_number") @db.SmallInt
+  sceneNumber      Int                            @map("scene_number") @db.SmallInt
+  source           StudioScreenplayRevisionSource @default(AUTHOR)
+  sourceRevisionId String?                        @map("source_revision_id") @db.Uuid
+  version          Int                            @db.SmallInt
+  content          String                         @db.Text
+  contentHash      String                         @map("content_hash") @db.Char(64)
+  wordCount        Int                            @map("word_count")
+  editSummary      String?                        @map("edit_summary") @db.VarChar(500)
+  createdAt        DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
 
   adaptation StudioAdaptationProject @relation(fields: [adaptationId], references: [id], onDelete: Restrict)
   scenePlan  StudioScenePlan         @relation(fields: [scenePlanId], references: [id], onDelete: Restrict)
@@ -661,6 +669,49 @@ model StudioScreenplaySceneRevision {
   @@unique([scenePlanId, sceneNumber, version])
   @@index([adaptationId, episodeNumber, sceneNumber, createdAt(sort: Desc)])
   @@map("studio_screenplay_scene_revisions")
+}
+
+// Standalone screenplay work deliberately has no adaptation or source-snapshot
+// relation. It is the persistent scene plan used by projects whose format is
+// `screenplay`; adaptation scene plans remain in StudioScenePlan above.
+model StudioStandaloneScreenplayScene {
+  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  episodeNumber Int      @map("episode_number") @db.SmallInt
+  sceneNumber   Int      @map("scene_number") @db.SmallInt
+  title         String   @db.VarChar(200)
+  synopsis      String   @default("") @db.Text
+  status        String   @default("draft") @db.VarChar(20)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project   StudioProject                        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  revisions StudioStandaloneScreenplayRevision[]
+
+  @@unique([projectId, episodeNumber, sceneNumber])
+  @@index([projectId, episodeNumber, sceneNumber])
+  @@map("studio_standalone_screenplay_scenes")
+}
+
+// Fountain text is append-only just like adaptation screenplay revisions, but
+// belongs only to a standalone screenplay scene and never carries source links.
+model StudioStandaloneScreenplayRevision {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  sceneId     String   @map("scene_id") @db.Uuid
+  version     Int      @db.SmallInt
+  content     String   @db.Text
+  contentHash String   @map("content_hash") @db.Char(64)
+  wordCount   Int      @map("word_count")
+  editSummary String?  @map("edit_summary") @db.VarChar(500)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project StudioProject                   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  scene   StudioStandaloneScreenplayScene @relation(fields: [sceneId], references: [id], onDelete: Restrict)
+
+  @@unique([sceneId, version])
+  @@index([projectId, createdAt(sort: Desc)])
+  @@map("studio_standalone_screenplay_revisions")
 }
 
 // Normalized, reviewable traceability link between a planned scene and the

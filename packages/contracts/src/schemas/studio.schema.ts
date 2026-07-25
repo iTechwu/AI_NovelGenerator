@@ -13,7 +13,9 @@ export const GenerationJobStatusSchema = z.enum([
 
 export const CreateStudioProjectSchema = z.object({
   title: z.string().trim().min(1).max(120),
-  format: z.literal('novel').default('novel'),
+  // A standalone screenplay starts from its own premise. Adaptation remains a
+  // separate, source-snapshot workflow and is never inferred from this field.
+  format: ProjectFormatSchema.default('novel'),
   genre: z.string().trim().min(1).max(80),
   premise: z.string().trim().min(20).max(4_000),
   chapterCount: z.coerce.number().int().min(1).max(500).default(20),
@@ -347,6 +349,92 @@ export const StudioAdaptationExportSchema = z.object({
   warnings: z.array(z.string()),
 });
 
+// Independent screenplay scenes never reference an adaptation or source
+// snapshot. Their plan remains editable while every Fountain save is immutable.
+export const StudioStandaloneScreenplaySceneStatusSchema = z.enum(['draft', 'confirmed']);
+
+export const StudioStandaloneScreenplaySceneSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  episodeNumber: z.number().int().positive(),
+  sceneNumber: z.number().int().positive(),
+  title: z.string(),
+  synopsis: z.string(),
+  status: StudioStandaloneScreenplaySceneStatusSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export const SaveStudioStandaloneScreenplaySceneSchema = z.object({
+  episodeNumber: z.coerce.number().int().min(1).max(100),
+  sceneNumber: z.coerce.number().int().min(1).max(200),
+  title: z.string().trim().min(1).max(200),
+  synopsis: z.string().trim().max(5_000).default(''),
+  status: StudioStandaloneScreenplaySceneStatusSchema.default('draft'),
+});
+
+export const StudioStandaloneScreenplaySceneListQuerySchema = PaginationQuerySchema.extend({
+  episodeNumber: z.coerce.number().int().min(1).optional(),
+});
+export const StudioStandaloneScreenplaySceneListResponseSchema = PaginatedResponseSchema(
+  StudioStandaloneScreenplaySceneSchema,
+);
+
+export const StudioStandaloneScreenplayRevisionSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  sceneId: z.string().uuid(),
+  version: z.number().int().positive(),
+  content: z.string(),
+  contentHash: z.string(),
+  wordCount: z.number().int().nonnegative(),
+  editSummary: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+
+export const CreateStudioStandaloneScreenplayRevisionSchema = z.object({
+  content: z.string().trim().min(1).max(50_000),
+  editSummary: z.string().trim().max(500).optional(),
+});
+
+export const StudioStandaloneScreenplayRevisionListQuerySchema = PaginationQuerySchema.pick({
+  limit: true,
+  page: true,
+});
+export const StudioStandaloneScreenplayRevisionListResponseSchema = PaginatedResponseSchema(
+  StudioStandaloneScreenplayRevisionSchema,
+);
+
+export const StudioStandaloneScreenplayExportQuerySchema = z.object({
+  format: z.enum(['fountain', 'txt']).default('fountain'),
+});
+
+export const StudioStandaloneScreenplayExportSchema = z.object({
+  filename: z.string(),
+  contentType: z.literal('text/plain'),
+  content: z.string(),
+  episodeCount: z.number().int().nonnegative(),
+  sceneCount: z.number().int().nonnegative(),
+  warnings: z.array(z.string()),
+});
+
+// PRD P13 来源更新复核: detect chapters finalized in the source novel AFTER the
+// immutable snapshot was taken, so the author can re-review affected mappings.
+export const StudioAdaptationSourceDriftSchema = z.object({
+  snapshotChapterCount: z.number().int().nonnegative(),
+  snapshotCreatedAt: z.string().datetime(),
+  newChapters: z.array(
+    z.object({
+      chapterNumber: z.number().int().positive(),
+      title: z.string(),
+    }),
+  ),
+});
+
+export const StudioAdaptationMarkStaleResponseSchema = z.object({
+  markedStaleCount: z.number().int().nonnegative(),
+});
+
 export const StudioProjectImportResultSchema = z.object({
   importId: z.string().uuid(),
   project: StudioProjectSummarySchema,
@@ -673,6 +761,45 @@ export const ConsistencyReviewResultSchema = z.object({
   report: z.string(),
 });
 
+// Python runtime: expand a chapter toward a target word count.
+export const ChapterEnrichRequestSchema = z.object({
+  chapterText: z.string().min(1).max(200_000),
+  targetWords: z.number().int().min(100).max(20_000),
+});
+export const ChapterEnrichResultSchema = z.object({
+  content: z.string(),
+});
+
+// Python runtime: parse a chapter blueprint into structured per-chapter info (no LLM).
+export const ParsedChapterSchema = z.object({
+  chapterNumber: z.number().int(),
+  chapterTitle: z.string().default(''),
+  chapterRole: z.string().default(''),
+  chapterPurpose: z.string().default(''),
+  suspenseLevel: z.string().default(''),
+  foreshadowing: z.string().default(''),
+  plotTwistLevel: z.string().default(''),
+  chapterSummary: z.string().default(''),
+});
+export const BlueprintParseRequestSchema = z.object({
+  blueprintText: z.string().min(1).max(200_000),
+});
+export const BlueprintParseResultSchema = z.object({
+  chapters: z.array(ParsedChapterSchema),
+});
+
+// Python runtime: summarize recent chapters into precise context (LLM).
+// chapterInfo / nextChapterInfo reuse the ParsedChapter shape from parse-blueprint.
+export const ChapterSummarizeRequestSchema = z.object({
+  chaptersText: z.array(z.string()).max(50),
+  chapterNumber: z.number().int().min(1),
+  chapterInfo: ParsedChapterSchema,
+  nextChapterInfo: ParsedChapterSchema,
+});
+export const ChapterSummarizeResultSchema = z.object({
+  summary: z.string(),
+});
+
 export const StudioProjectListItemSchema = StudioProjectSummarySchema.extend({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -819,6 +946,40 @@ export type StudioScreenplaySceneRevisionListResponse = z.infer<
 >;
 export type StudioAdaptationExportQuery = z.infer<typeof StudioAdaptationExportQuerySchema>;
 export type StudioAdaptationExport = z.infer<typeof StudioAdaptationExportSchema>;
+export type StudioStandaloneScreenplayScene = z.infer<
+  typeof StudioStandaloneScreenplaySceneSchema
+>;
+export type SaveStudioStandaloneScreenplayScene = z.infer<
+  typeof SaveStudioStandaloneScreenplaySceneSchema
+>;
+export type StudioStandaloneScreenplaySceneListQuery = z.infer<
+  typeof StudioStandaloneScreenplaySceneListQuerySchema
+>;
+export type StudioStandaloneScreenplaySceneListResponse = z.infer<
+  typeof StudioStandaloneScreenplaySceneListResponseSchema
+>;
+export type StudioStandaloneScreenplayRevision = z.infer<
+  typeof StudioStandaloneScreenplayRevisionSchema
+>;
+export type CreateStudioStandaloneScreenplayRevision = z.infer<
+  typeof CreateStudioStandaloneScreenplayRevisionSchema
+>;
+export type StudioStandaloneScreenplayRevisionListQuery = z.infer<
+  typeof StudioStandaloneScreenplayRevisionListQuerySchema
+>;
+export type StudioStandaloneScreenplayRevisionListResponse = z.infer<
+  typeof StudioStandaloneScreenplayRevisionListResponseSchema
+>;
+export type StudioStandaloneScreenplayExportQuery = z.infer<
+  typeof StudioStandaloneScreenplayExportQuerySchema
+>;
+export type StudioStandaloneScreenplayExport = z.infer<
+  typeof StudioStandaloneScreenplayExportSchema
+>;
+export type StudioAdaptationSourceDrift = z.infer<typeof StudioAdaptationSourceDriftSchema>;
+export type StudioAdaptationMarkStaleResponse = z.infer<
+  typeof StudioAdaptationMarkStaleResponseSchema
+>;
 export type StudioFactProposal = z.infer<typeof StudioFactProposalSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;
 export type StudioBlueprint = z.infer<typeof StudioBlueprintSchema>;
@@ -828,6 +989,13 @@ export type UpdateStudioBlueprint = z.infer<typeof UpdateStudioBlueprintSchema>;
 export type StudioChapterPlan = z.infer<typeof StudioChapterPlanSchema>;
 export type ConsistencyReviewRequest = z.infer<typeof ConsistencyReviewRequestSchema>;
 export type ConsistencyReviewResult = z.infer<typeof ConsistencyReviewResultSchema>;
+export type ChapterEnrichRequest = z.infer<typeof ChapterEnrichRequestSchema>;
+export type ChapterEnrichResult = z.infer<typeof ChapterEnrichResultSchema>;
+export type ParsedChapter = z.infer<typeof ParsedChapterSchema>;
+export type BlueprintParseRequest = z.infer<typeof BlueprintParseRequestSchema>;
+export type BlueprintParseResult = z.infer<typeof BlueprintParseResultSchema>;
+export type ChapterSummarizeRequest = z.infer<typeof ChapterSummarizeRequestSchema>;
+export type ChapterSummarizeResult = z.infer<typeof ChapterSummarizeResultSchema>;
 export type UpdateStudioChapterPlan = z.infer<typeof UpdateStudioChapterPlanSchema>;
 export type CreateStudioChapterDraft = z.infer<typeof CreateStudioChapterDraftSchema>;
 export type CreateStudioAuthorRevision = z.infer<typeof CreateStudioAuthorRevisionSchema>;

@@ -11,7 +11,6 @@ from embedding_adapters import create_embedding_adapter
 import prompt_definitions
 from novel_generator.common import invoke_with_cleaning
 from utils import read_file
-from novel_generator.vectorstore_utils import update_vector_store
 logging.basicConfig(
     filename='app.log',      # 日志文件名
     filemode='a',            # 追加模式（'w' 会覆盖）
@@ -102,6 +101,7 @@ def finalize_chapter(
             embedding_url,
             embedding_model_name
         )
+        from novel_generator.vectorstore_utils import update_vector_store  # lazy: keeps enrich/import numpy-free
         update_vector_store(
             embedding_adapter=embedding_adapter,
             new_chapter=chapter_text,

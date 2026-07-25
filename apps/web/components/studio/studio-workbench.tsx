@@ -58,6 +58,8 @@ import type {
   StudioScenePlan,
   StudioScenePlanScene,
   StudioSourceSceneMapping,
+  StudioScreenplaySceneRevision,
+  StudioAdaptationSourceDrift,
   StudioProjectListResponse,
   StudioProjectOverview,
   StudioProjectImportPreview,
@@ -78,6 +80,11 @@ const initialProject: CreateStudioProject = {
   guidance: '',
   generateOutline: true,
 };
+
+const projectFormatLabel = {
+  novel: '小说',
+  screenplay: '剧本',
+} as const;
 
 const studioGenres = ['悬疑', '科幻', '言情', '历史', '奇幻', '现实主义', '冒险'];
 
@@ -269,8 +276,13 @@ function StoryPremiseEditor({
   );
 }
 
-export function StudioWorkbench() {
+export function StudioWorkbench({
+  onOpenProject,
+}: {
+  onOpenProject?: (projectId: string) => void;
+}) {
   const [project, setProject] = useState<CreateStudioProject>(initialProject);
+  const [quickPremises, setQuickPremises] = useState({ novel: '', screenplay: '' });
   const [isProjectSetupStarted, setIsProjectSetupStarted] = useState(false);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [blueprint, setBlueprint] = useState<StudioBlueprint | null>(null);
@@ -412,6 +424,25 @@ export function StudioWorkbench() {
   >({});
   const [resolvingSourceMappingId, setResolvingSourceMappingId] = useState<string | null>(null);
   const [sourceMappingError, setSourceMappingError] = useState<string | null>(null);
+  const [screenplayRevisions, setScreenplayRevisions] = useState<StudioScreenplaySceneRevision[]>([]);
+  const [isLoadingScreenplayRevisions, setIsLoadingScreenplayRevisions] = useState(false);
+  const [screenplayDraft, setScreenplayDraft] = useState({
+    episodeNumber: 1,
+    sceneNumber: 1,
+    content: '',
+    editSummary: '',
+  });
+  const [isSavingScreenplayRevision, setIsSavingScreenplayRevision] = useState(false);
+  const [screenplayError, setScreenplayError] = useState<string | null>(null);
+  const [adaptationExportFormat, setAdaptationExportFormat] = useState<'fountain' | 'txt'>('fountain');
+  const [isExportingAdaptation, setIsExportingAdaptation] = useState(false);
+  const [isStartingReviewReady, setIsStartingReviewReady] = useState(false);
+  const [isStartingDeliverable, setIsStartingDeliverable] = useState(false);
+  const [adaptationExportError, setAdaptationExportError] = useState<string | null>(null);
+  const [sourceDrift, setSourceDrift] = useState<StudioAdaptationSourceDrift | null>(null);
+  const [isLoadingSourceDrift, setIsLoadingSourceDrift] = useState(false);
+  const [isMarkingMappingsStale, setIsMarkingMappingsStale] = useState(false);
+  const [sourceDriftError, setSourceDriftError] = useState<string | null>(null);
   const selectedAdaptation = adaptations.find((item) => item.id === selectedAdaptationId) ?? null;
   const isAdaptationBriefEditable =
     !selectedAdaptation || selectedAdaptation.status === 'brief_draft';
@@ -555,6 +586,61 @@ export function StudioWorkbench() {
     }
   }, []);
 
+  const loadScreenplayRevisions = useCallback(async (adaptationId: string) => {
+    setIsLoadingScreenplayRevisions(true);
+    setScreenplayError(null);
+    try {
+      const response = await studioClient.listScreenplaySceneRevisions({
+        params: { adaptationId },
+        query: { page: 1, limit: 200 },
+      });
+      if (response.status === 200) setScreenplayRevisions(response.body.data.list);
+      else setScreenplayError('场景剧本暂时无法加载。');
+    } catch {
+      setScreenplayError('场景剧本暂时无法加载。');
+    } finally {
+      setIsLoadingScreenplayRevisions(false);
+    }
+  }, []);
+
+  const loadSourceDrift = useCallback(async (adaptationId: string) => {
+    setIsLoadingSourceDrift(true);
+    setSourceDriftError(null);
+    try {
+      const response = await studioClient.listAdaptationSourceDrift({
+        params: { adaptationId },
+      });
+      if (response.status === 200) setSourceDrift(response.body.data);
+      else setSourceDriftError('来源更新检测暂时不可用。');
+    } catch {
+      setSourceDriftError('来源更新检测暂时不可用。');
+    } finally {
+      setIsLoadingSourceDrift(false);
+    }
+  }, []);
+
+  const markMappingsStale = async () => {
+    if (!selectedAdaptation) return;
+    setIsMarkingMappingsStale(true);
+    setSourceDriftError(null);
+    try {
+      const response = await studioClient.markSourceSceneMappingsStale({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        await Promise.all([
+          loadSourceSceneMappings(selectedAdaptation.id),
+          loadSourceDrift(selectedAdaptation.id),
+        ]);
+      } else setSourceDriftError('标记溯源待复核失败。');
+    } catch {
+      setSourceDriftError('标记溯源待复核失败，请稍后重试。');
+    } finally {
+      setIsMarkingMappingsStale(false);
+    }
+  };
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadProjects(), 0);
     return () => window.clearTimeout(timer);
@@ -594,7 +680,10 @@ export function StudioWorkbench() {
       setSceneDraft({ title: '', synopsis: '', act: '' });
     }
     if (
-      (status === 'scene_planning' || status === 'script_writing' || status === 'review_ready') &&
+      (status === 'scene_planning' ||
+        status === 'script_writing' ||
+        status === 'review_ready' ||
+        status === 'deliverable') &&
       adaptationId
     ) {
       void loadSourceSceneMappings(adaptationId);
@@ -609,7 +698,34 @@ export function StudioWorkbench() {
       setSourceMappingResolutionDrafts({});
       setAdaptationSourceChapters([]);
     }
-  }, [selectedAdaptation, loadAdaptationDecisions, loadScenePlans, loadSourceSceneMappings]);
+    if (
+      (status === 'script_writing' || status === 'review_ready' || status === 'deliverable') &&
+      adaptationId
+    ) {
+      void loadScreenplayRevisions(adaptationId);
+    } else {
+      setScreenplayRevisions([]);
+      setScreenplayDraft({ episodeNumber: 1, sceneNumber: 1, content: '', editSummary: '' });
+    }
+    if (
+      (status === 'scene_planning' ||
+        status === 'script_writing' ||
+        status === 'review_ready' ||
+        status === 'deliverable') &&
+      adaptationId
+    ) {
+      void loadSourceDrift(adaptationId);
+    } else {
+      setSourceDrift(null);
+    }
+  }, [
+    selectedAdaptation,
+    loadAdaptationDecisions,
+    loadScenePlans,
+    loadSourceSceneMappings,
+    loadScreenplayRevisions,
+    loadSourceDrift,
+  ]);
 
   useEffect(() => {
     if (!activeProjectId) return;
@@ -939,6 +1055,26 @@ export function StudioWorkbench() {
     window.setTimeout(() => document.getElementById('genre')?.focus(), 0);
   };
 
+  const startQuickProjectSetup = (format: CreateStudioProject['format']) => {
+    const premise = quickPremises[format].trim();
+    if (premise.length < 20) {
+      setError(`请用至少 20 个字符描述你想写的${projectFormatLabel[format]}。`);
+      return;
+    }
+    setProject((current) => ({
+      ...current,
+      title: current.title.trim() || `未命名${projectFormatLabel[format]}`,
+      format,
+      premise,
+      chapterCount: format === 'screenplay' ? 12 : current.chapterCount,
+      targetWordsPerChapter: format === 'screenplay' ? 1_500 : current.targetWordsPerChapter,
+      generateOutline: true,
+    }));
+    setError(null);
+    setIsProjectSetupStarted(true);
+    window.setTimeout(() => document.getElementById('project-title')?.focus(), 0);
+  };
+
   const previewProjectImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -1097,6 +1233,10 @@ export function StudioWorkbench() {
   };
 
   const openProject = async (item: StudioProjectListItem) => {
+    if (onOpenProject) {
+      onOpenProject(item.id);
+      return;
+    }
     setOpeningRunId(item.id);
     setError(null);
     setIsProjectSetupStarted(true);
@@ -1450,6 +1590,108 @@ export function StudioWorkbench() {
       setSourceMappingError('场景溯源处理失败。');
     } finally {
       setResolvingSourceMappingId(null);
+    }
+  };
+
+  const saveScreenplayRevision = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedAdaptation) return;
+    if (!screenplayDraft.content.trim()) return;
+    setIsSavingScreenplayRevision(true);
+    setScreenplayError(null);
+    try {
+      const response = await studioClient.createScreenplaySceneRevision({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {
+          episodeNumber: screenplayDraft.episodeNumber,
+          sceneNumber: screenplayDraft.sceneNumber,
+          content: screenplayDraft.content,
+          editSummary: screenplayDraft.editSummary.trim() || undefined,
+        },
+      });
+      if (response.status === 201) {
+        setScreenplayRevisions((current) => [response.body.data, ...current]);
+        setScreenplayDraft((current) => ({
+          ...current,
+          content: '',
+          editSummary: '',
+        }));
+      } else setScreenplayError('场景剧本保存失败，请核对集数与场景编号。');
+    } catch {
+      setScreenplayError('场景剧本保存失败，请稍后重试。');
+    } finally {
+      setIsSavingScreenplayRevision(false);
+    }
+  };
+
+  const exportAdaptation = async () => {
+    if (!selectedAdaptation) return;
+    setIsExportingAdaptation(true);
+    setAdaptationExportError(null);
+    try {
+      const response = await studioClient.exportAdaptation({
+        params: { adaptationId: selectedAdaptation.id },
+        query: { format: adaptationExportFormat },
+      });
+      if (response.status !== 200) {
+        setAdaptationExportError('剧本暂时无法导出，请先确认至少一集场景计划。');
+        return;
+      }
+      const file = new Blob([response.body.data.content], {
+        type: response.body.data.contentType,
+      });
+      const url = URL.createObjectURL(file);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = response.body.data.filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setAdaptationExportError('剧本暂时无法导出，请稍后重试。');
+    } finally {
+      setIsExportingAdaptation(false);
+    }
+  };
+
+  const startReviewReady = async () => {
+    if (!selectedAdaptation) return;
+    setIsStartingReviewReady(true);
+    setScreenplayError(null);
+    try {
+      const response = await studioClient.startReviewReady({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        setAdaptations((current) =>
+          current.map((item) => (item.id === response.body.data.id ? response.body.data : item)),
+        );
+      } else setScreenplayError('请先编写至少一个场景剧本，再提交对照审阅。');
+    } catch {
+      setScreenplayError('提交对照审阅失败，请稍后重试。');
+    } finally {
+      setIsStartingReviewReady(false);
+    }
+  };
+
+  const startDeliverable = async () => {
+    if (!selectedAdaptation) return;
+    setIsStartingDeliverable(true);
+    setScreenplayError(null);
+    try {
+      const response = await studioClient.startDeliverable({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {},
+      });
+      if (response.status === 200) {
+        setAdaptations((current) =>
+          current.map((item) => (item.id === response.body.data.id ? response.body.data : item)),
+        );
+      } else setScreenplayError('标记可交付失败，请稍后重试。');
+    } catch {
+      setScreenplayError('标记可交付失败，请稍后重试。');
+    } finally {
+      setIsStartingDeliverable(false);
     }
   };
 
@@ -1961,6 +2203,7 @@ export function StudioWorkbench() {
 
   useEffect(() => {
     publishProjectNavigationState({
+      projectId: activeProjectId ?? undefined,
       hasProject: Boolean(activeProjectId),
       hasBlueprint: Boolean(blueprint),
       hasChapterWorkspace: Boolean(
@@ -1988,7 +2231,7 @@ export function StudioWorkbench() {
           </div>
           <h1 className="mt-2 text-3xl font-semibold">作品库</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            查看已有作品与生成状态，或创建一个新故事。所有生成任务由后台运行时执行。
+            从一句话开始创作小说或独立剧本，也可以从已定稿小说建立可追溯的改编项目。
           </p>
         </div>
         {job && <Badge variant={statusVariant(job.status)}>{statusLabel(job.status)}</Badge>}
@@ -2003,18 +2246,71 @@ export function StudioWorkbench() {
           <div className="max-w-2xl">
             <div className="flex items-center gap-2 text-sm font-medium text-primary">
               <FileText className="size-4" />
-              新建作品
+              从一句话开始
             </div>
             <h2 id="project-entry-heading" className="mt-3 text-2xl font-semibold tracking-normal">
-              从一个项目开始
+              选择你要创作的文体
             </h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              先为作品命名。题材、篇幅和故事设定可以在下一步慢慢补全。
+              独立小说与独立剧本从各自的一句话创意开始；小说转剧本仍需在已定稿小说内发起。
             </p>
           </div>
+          <div className="grid max-w-4xl gap-4 lg:grid-cols-2">
+            <section
+              id="novel-setup"
+              className="grid gap-3 border bg-background p-4 scroll-mt-6"
+              aria-labelledby="novel-entry-heading"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <BookOpenText className="size-4 text-primary" />
+                <h3 id="novel-entry-heading">一句话写小说</h3>
+              </div>
+              <Textarea
+                aria-label="小说一句话设定"
+                value={quickPremises.novel}
+                onChange={(event) =>
+                  setQuickPremises((current) => ({ ...current, novel: event.target.value }))
+                }
+                placeholder="例如：失踪多年的记者寄回一封信，女儿必须回到封锁的港口查明真相。"
+                className="min-h-24 resize-y"
+                maxLength={4000}
+              />
+              <Button type="button" onClick={() => startQuickProjectSetup('novel')}>
+                开始写小说
+                <ArrowRight />
+              </Button>
+            </section>
+            <section
+              id="screenplay-setup"
+              className="grid gap-3 border bg-background p-4 scroll-mt-6"
+              aria-labelledby="screenplay-entry-heading"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Clapperboard className="size-4 text-primary" />
+                <h3 id="screenplay-entry-heading">一句话写剧本</h3>
+              </div>
+              <Textarea
+                aria-label="剧本一句话设定"
+                value={quickPremises.screenplay}
+                onChange={(event) =>
+                  setQuickPremises((current) => ({ ...current, screenplay: event.target.value }))
+                }
+                placeholder="例如：婚礼当天，新娘收到匿名录像，必须在仪式结束前找出录像里失踪的新郎。"
+                className="min-h-24 resize-y"
+                maxLength={4000}
+              />
+              <Button type="button" variant="outline" onClick={() => startQuickProjectSetup('screenplay')}>
+                开始写剧本
+                <ArrowRight />
+              </Button>
+            </section>
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">
+            已有小说需要改编时，请先打开该小说并进入“小说转剧本”；它会保留来源快照，不与独立剧本混用。
+          </p>
           <div className="flex max-w-xl flex-col gap-3 sm:flex-row">
             <div className="grid flex-1 gap-2">
-              <Label htmlFor="title">项目名称</Label>
+                <Label htmlFor="title">项目名称</Label>
               <Input
                 id="title"
                 value={project.title}
@@ -2899,17 +3195,53 @@ export function StudioWorkbench() {
                               className="grid gap-4 border-t pt-5"
                               aria-labelledby="adaptation-source-mappings-heading"
                             >
-                              <div>
-                                <p
-                                  id="adaptation-source-mappings-heading"
-                                  className="text-sm font-semibold"
-                                >
-                                  场景溯源
-                                </p>
-                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                                  把每个场景锚定到不可变来源章节；来源或取舍变更后，对应溯源会进入待复核。
-                                </p>
+                              <div className="flex flex-wrap items-end justify-between gap-3">
+                                <div>
+                                  <p
+                                    id="adaptation-source-mappings-heading"
+                                    className="text-sm font-semibold"
+                                  >
+                                    场景溯源
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                    把每个场景锚定到不可变来源章节；来源或取舍变更后，对应溯源会进入待复核。
+                                  </p>
+                                </div>
+                                {sourceDrift && sourceDrift.newChapters.length > 0 && (
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="destructive">
+                                      来源新增 {sourceDrift.newChapters.length} 章
+                                    </Badge>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={isMarkingMappingsStale}
+                                      onClick={() => void markMappingsStale()}
+                                    >
+                                      {isMarkingMappingsStale ? (
+                                        <LoaderCircle className="animate-spin" />
+                                      ) : (
+                                        <RefreshCw />
+                                      )}
+                                      标记溯源待复核
+                                    </Button>
+                                  </div>
+                                )}
                               </div>
+                              {sourceDriftError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {sourceDriftError}
+                                </p>
+                              )}
+                              {sourceDrift && sourceDrift.newChapters.length > 0 && (
+                                <p className="text-xs text-muted-foreground">
+                                  新增章节：
+                                  {sourceDrift.newChapters
+                                    .map((chapter) => `第 ${chapter.chapterNumber} 章 ${chapter.title}`)
+                                    .join('、')}
+                                </p>
+                              )}
                               <form
                                 className="grid gap-3 rounded-md border p-3"
                                 onSubmit={createSourceSceneMapping}
@@ -3103,6 +3435,309 @@ export function StudioWorkbench() {
                               </ul>
                             </div>
                           )}
+                          {['script_writing', 'review_ready', 'deliverable'].includes(
+                            selectedAdaptation?.status ?? '',
+                          ) && (
+                            <div
+                              id="adaptation-screenplay"
+                              className="grid gap-4 border-t pt-5"
+                              aria-labelledby="adaptation-screenplay-heading"
+                            >
+                              <div className="flex flex-wrap items-end justify-between gap-3">
+                                <div>
+                                  <p
+                                    id="adaptation-screenplay-heading"
+                                    className="text-sm font-semibold"
+                                  >
+                                    场景剧本
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                    按场景编写剧本；每次保存生成新的不可变版本，历史版本始终可追溯。
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Select
+                                    value={adaptationExportFormat}
+                                    onValueChange={(value) =>
+                                      setAdaptationExportFormat(value as 'fountain' | 'txt')
+                                    }
+                                  >
+                                    <SelectTrigger aria-label="剧本导出格式" size="sm" className="w-32">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent position="popper">
+                                      <SelectItem value="fountain">Fountain</SelectItem>
+                                      <SelectItem value="txt">TXT</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={isExportingAdaptation}
+                                    onClick={() => void exportAdaptation()}
+                                  >
+                                    {isExportingAdaptation ? (
+                                      <LoaderCircle className="animate-spin" />
+                                    ) : (
+                                      <Download />
+                                    )}
+                                    导出剧本
+                                  </Button>
+                                  {selectedAdaptation?.status === 'script_writing' && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={isStartingReviewReady}
+                                      onClick={() => void startReviewReady()}
+                                    >
+                                      {isStartingReviewReady ? (
+                                        <LoaderCircle className="animate-spin" />
+                                      ) : (
+                                        <ArrowRight />
+                                      )}
+                                      提交对照审阅
+                                    </Button>
+                                  )}
+                                  {selectedAdaptation?.status === 'review_ready' && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      disabled={isStartingDeliverable}
+                                      onClick={() => void startDeliverable()}
+                                    >
+                                      {isStartingDeliverable ? (
+                                        <LoaderCircle className="animate-spin" />
+                                      ) : (
+                                        <Check />
+                                      )}
+                                      标记可交付
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                              {adaptationExportError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {adaptationExportError}
+                                </p>
+                              )}
+                              <form
+                                className="grid gap-3 rounded-md border p-3"
+                                onSubmit={saveScreenplayRevision}
+                              >
+                                <div className="grid gap-3 sm:grid-cols-[100px_100px_1fr]">
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="screenplay-episode">集数</Label>
+                                    <Input
+                                      id="screenplay-episode"
+                                      type="number"
+                                      min={1}
+                                      max={100}
+                                      value={screenplayDraft.episodeNumber}
+                                      onChange={(event) =>
+                                        setScreenplayDraft((current) => ({
+                                          ...current,
+                                          episodeNumber: Number(event.target.value),
+                                        }))
+                                      }
+                                      required
+                                    />
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="screenplay-scene">场景</Label>
+                                    <Input
+                                      id="screenplay-scene"
+                                      type="number"
+                                      min={1}
+                                      max={200}
+                                      value={screenplayDraft.sceneNumber}
+                                      onChange={(event) =>
+                                        setScreenplayDraft((current) => ({
+                                          ...current,
+                                          sceneNumber: Number(event.target.value),
+                                        }))
+                                      }
+                                      required
+                                    />
+                                  </div>
+                                  <div className="grid gap-1.5">
+                                    <Label htmlFor="screenplay-summary">编辑摘要</Label>
+                                    <Input
+                                      id="screenplay-summary"
+                                      value={screenplayDraft.editSummary}
+                                      onChange={(event) =>
+                                        setScreenplayDraft((current) => ({
+                                          ...current,
+                                          editSummary: event.target.value,
+                                        }))
+                                      }
+                                      maxLength={500}
+                                      placeholder="例如：补全对白与动作。"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="grid gap-1.5">
+                                  <Label htmlFor="screenplay-content">剧本正文（Fountain）</Label>
+                                  <Textarea
+                                    id="screenplay-content"
+                                    value={screenplayDraft.content}
+                                    onChange={(event) =>
+                                      setScreenplayDraft((current) => ({
+                                        ...current,
+                                        content: event.target.value,
+                                      }))
+                                    }
+                                    className="min-h-40 resize-y font-mono text-sm"
+                                    maxLength={50000}
+                                    placeholder={'INT. 码头 - 夜\n\n女主撑伞走近。'}
+                                  />
+                                </div>
+                                <div className="flex justify-end">
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={
+                                      isSavingScreenplayRevision ||
+                                      !screenplayDraft.content.trim()
+                                    }
+                                  >
+                                    {isSavingScreenplayRevision ? (
+                                      <LoaderCircle className="animate-spin" />
+                                    ) : (
+                                      <Save />
+                                    )}
+                                    保存场景剧本
+                                  </Button>
+                                </div>
+                              </form>
+                              {screenplayError && (
+                                <p className="text-sm text-destructive" role="alert">
+                                  {screenplayError}
+                                </p>
+                              )}
+                              {isLoadingScreenplayRevisions && <Skeleton className="h-16 w-full" />}
+                              {!isLoadingScreenplayRevisions &&
+                                screenplayRevisions.length === 0 && (
+                                  <p className="text-sm text-muted-foreground">
+                                    还没有场景剧本。选择已规划的场景开始编写。
+                                  </p>
+                                )}
+                              <ul className="grid gap-2">
+                                {screenplayRevisions.map((revision) => (
+                                  <li
+                                    key={revision.id}
+                                    className="grid gap-1 border-l-2 border-primary/50 pl-3 text-sm"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge variant="outline">
+                                        第 {revision.episodeNumber} 集 · 场景 {revision.sceneNumber}
+                                      </Badge>
+                                      <Badge variant="secondary">v{revision.version}</Badge>
+                                      <span className="text-xs text-muted-foreground">
+                                        {revision.wordCount} 字
+                                      </span>
+                                    </div>
+                                    {revision.editSummary && (
+                                      <p className="text-xs text-muted-foreground">
+                                        {revision.editSummary}
+                                      </p>
+                                    )}
+                                    <pre className="whitespace-pre-wrap font-mono text-xs leading-5">
+                                      {revision.content}
+                                    </pre>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {['review_ready', 'deliverable'].includes(
+                            selectedAdaptation?.status ?? '',
+                          ) && (
+                            <div
+                              id="adaptation-comparative-review"
+                              className="grid gap-4 border-t pt-5"
+                              aria-labelledby="adaptation-comparative-review-heading"
+                            >
+                              <div>
+                                <p
+                                  id="adaptation-comparative-review-heading"
+                                  className="text-sm font-semibold"
+                                >
+                                  对照审阅
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                                  按场景对照原作章节与改编剧本，核对取舍与忠实度。来源与剧本均来自不可变快照与场景剧本修订。
+                                </p>
+                              </div>
+                              {sourceMappings.length === 0 && (
+                                <p className="text-sm text-muted-foreground">
+                                  还没有场景溯源，无法对照。先在场景计划阶段把场景锚定到来源章节。
+                                </p>
+                              )}
+                              <ul className="grid gap-3">
+                                {sourceMappings.map((mapping) => {
+                                  const revision = screenplayRevisions
+                                    .filter(
+                                      (item) =>
+                                        item.episodeNumber === mapping.episodeNumber &&
+                                        item.sceneNumber === mapping.sceneNumber,
+                                    )
+                                    .sort((a, b) => b.version - a.version)[0];
+                                  const sourceChapter = adaptationSourceChapters.find(
+                                    (chapter) => chapter.id === mapping.sourceChapter.id,
+                                  );
+                                  return (
+                                    <li
+                                      key={mapping.id}
+                                      className="grid gap-3 rounded-md border p-3 text-xs md:grid-cols-3"
+                                    >
+                                      <div>
+                                        <p className="font-semibold">
+                                          原作 第 {mapping.sourceChapter.chapterNumber} 章 ·{' '}
+                                          {mapping.sourceChapter.title}
+                                        </p>
+                                        <p className="mt-1 line-clamp-6 whitespace-pre-wrap text-muted-foreground">
+                                          {sourceChapter?.content ?? '来源章节内容缺失。'}
+                                        </p>
+                                      </div>
+                                      <div>
+                                        <p className="font-semibold">
+                                          剧本 第 {mapping.episodeNumber} 集 · 场景{' '}
+                                          {mapping.sceneNumber}
+                                        </p>
+                                        {revision ? (
+                                          <pre className="mt-1 line-clamp-6 whitespace-pre-wrap font-mono text-muted-foreground">
+                                            {revision.content}
+                                          </pre>
+                                        ) : (
+                                          <p className="mt-1 text-muted-foreground">
+                                            该场景尚无剧本。
+                                          </p>
+                                        )}
+                                      </div>
+                                      <div>
+                                        <Badge
+                                          variant={
+                                            mapping.status === 'stale' ? 'destructive' : 'outline'
+                                          }
+                                        >
+                                          {sourceMappingStatusLabel[mapping.status]}
+                                        </Badge>
+                                        {mapping.evidenceAnchor && (
+                                          <p className="mt-2 text-muted-foreground">
+                                            证据：{mapping.evidenceAnchor}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          )}
                         </section>
                       )}
                     </div>
@@ -3246,12 +3881,19 @@ export function StudioWorkbench() {
             <section className="grid gap-5 border-b pb-7">
               <div className="flex items-center gap-2">
                 <FileText className="size-4 text-primary" />
-                <h2 className="text-base font-semibold">补全故事设定</h2>
+                <h2 className="text-base font-semibold">补全{projectFormatLabel[project.format]}设定</h2>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-3 border-l-2 border-primary/40 bg-muted/40 px-4 py-3">
                 <div>
                   <p className="text-xs text-muted-foreground">当前项目</p>
-                  <p className="mt-0.5 font-medium">{project.title}</p>
+                  <Input
+                    id="project-title"
+                    aria-label="项目名称"
+                    value={project.title}
+                    onChange={(event) => updateProject('title', event.target.value)}
+                    maxLength={120}
+                    className="mt-1 max-w-md bg-background"
+                  />
                 </div>
                 <Button
                   type="button"
@@ -3271,6 +3913,7 @@ export function StudioWorkbench() {
                     </SelectTrigger>
                     <SelectContent position="popper">
                       <SelectItem value="novel">小说</SelectItem>
+                      <SelectItem value="screenplay">剧本</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -3293,7 +3936,7 @@ export function StudioWorkbench() {
                   </Select>
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="chapters">章节数量</Label>
+                  <Label htmlFor="chapters">{project.format === 'novel' ? '章节数量' : '预计集数'}</Label>
                   <Input
                     id="chapters"
                     type="number"
@@ -3306,13 +3949,14 @@ export function StudioWorkbench() {
                 </div>
               </div>
               <div className="grid gap-2">
-                <Label id="premise-label">故事梗概</Label>
+                <Label id="premise-label">{project.format === 'novel' ? '故事梗概' : '剧本梗概'}</Label>
                 <StoryPremiseEditor
                   value={project.premise}
                   onChange={(value) => updateProject('premise', value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  支持基础排版；至少 20 个字符，越具体越利于保持长篇一致性。
+                  支持基础排版；至少 20 个字符，越具体越利于生成可编辑的
+                  {project.format === 'novel' ? '小说蓝图。' : '剧本蓝图与分集节拍。'}
                 </p>
               </div>
             </section>
@@ -3324,7 +3968,9 @@ export function StudioWorkbench() {
               </div>
               <div className="grid gap-5 sm:grid-cols-2">
                 <div className="grid gap-2">
-                  <Label htmlFor="word-count">每章目标字数</Label>
+                  <Label htmlFor="word-count">
+                    {project.format === 'novel' ? '每章目标字数' : '每集目标字数'}
+                  </Label>
                   <Input
                     id="word-count"
                     type="number"
@@ -3344,7 +3990,7 @@ export function StudioWorkbench() {
                     onChange={(event) => updateProject('generateOutline', event.target.checked)}
                     className="size-4 accent-primary"
                   />
-                  同时生成章节蓝图
+                  {project.format === 'novel' ? '同时生成章节蓝图' : '同时生成分集节拍'}
                 </label>
               </div>
               <div className="grid gap-2">
@@ -3353,7 +3999,11 @@ export function StudioWorkbench() {
                   id="guidance"
                   value={project.guidance}
                   onChange={(event) => updateProject('guidance', event.target.value)}
-                  placeholder="例如：保持冷峻克制的叙述，感情线缓慢推进，避免超自然设定。"
+                  placeholder={
+                    project.format === 'novel'
+                      ? '例如：保持冷峻克制的叙述，感情线缓慢推进，避免超自然设定。'
+                      : '例如：每集结尾保留钩子，动作少于对白，保持现实质感。'
+                  }
                   className="min-h-24 resize-y"
                   maxLength={2000}
                 />
@@ -3376,7 +4026,11 @@ export function StudioWorkbench() {
                 ) : (
                   <Sparkles />
                 )}
-                {job && !terminalStatuses.has(job.status) ? '正在生成' : '生成故事架构'}
+                {job && !terminalStatuses.has(job.status)
+                  ? '正在生成'
+                  : project.format === 'novel'
+                    ? '生成故事架构'
+                    : '生成剧本蓝图'}
               </Button>
             </div>
           </form>

@@ -29,6 +29,8 @@ import {
   StudioScenePlanService,
   StudioSourceSceneMappingService,
   StudioScreenplaySceneRevisionService,
+  StudioStandaloneScreenplaySceneService,
+  StudioStandaloneScreenplayRevisionService,
 } from '@app/db';
 import type {
   StudioBlueprint,
@@ -48,6 +50,8 @@ import type {
   StudioScenePlan,
   StudioSourceSceneMapping,
   StudioScreenplaySceneRevision,
+  StudioStandaloneScreenplayScene,
+  StudioStandaloneScreenplayRevision,
   Prisma,
 } from '@prisma/client';
 import { CommonErrorCode } from '@repo/contracts/errors';
@@ -125,6 +129,18 @@ import type {
   StudioScreenplaySceneRevisionListResponse,
   StudioAdaptationExport as StudioAdaptationExportResponse,
   StudioAdaptationExportQuery,
+  StudioAdaptationSourceDrift,
+  StudioAdaptationMarkStaleResponse,
+  SaveStudioStandaloneScreenplayScene,
+  StudioStandaloneScreenplayScene as StudioStandaloneScreenplaySceneResponse,
+  StudioStandaloneScreenplaySceneListQuery,
+  StudioStandaloneScreenplaySceneListResponse,
+  CreateStudioStandaloneScreenplayRevision,
+  StudioStandaloneScreenplayRevision as StudioStandaloneScreenplayRevisionResponse,
+  StudioStandaloneScreenplayRevisionListQuery,
+  StudioStandaloneScreenplayRevisionListResponse,
+  StudioStandaloneScreenplayExport,
+  StudioStandaloneScreenplayExportQuery,
   CreateStudioAdaptationDecision,
   ResolveStudioAdaptationDecision,
   StudioAdaptationDecision as StudioAdaptationDecisionResponse,
@@ -197,6 +213,8 @@ export class StudioService {
     private readonly scenePlanService: StudioScenePlanService,
     private readonly sourceSceneMappingService: StudioSourceSceneMappingService,
     private readonly screenplayRevisionService: StudioScreenplaySceneRevisionService,
+    private readonly standaloneScreenplaySceneService: StudioStandaloneScreenplaySceneService,
+    private readonly standaloneScreenplayRevisionService: StudioStandaloneScreenplayRevisionService,
     private readonly runService: StudioGenerationRunService,
     private readonly blueprintService: StudioBlueprintService,
     private readonly chapterPlanService: StudioChapterPlanService,
@@ -432,7 +450,9 @@ export class StudioService {
     );
     const snapshots = await Promise.all(
       adaptations.list.map((adaptation) =>
-        this.adaptationSourceSnapshotService.get({ adaptationId: adaptation.id }),
+        adaptation.currentSnapshotId
+          ? this.adaptationSourceSnapshotService.getById(adaptation.currentSnapshotId)
+          : Promise.resolve(null),
       ),
     );
 
@@ -530,7 +550,12 @@ export class StudioService {
           wordCount: revision.wordCount,
         })),
       );
-      return { adaptation, snapshot };
+      // Repoint the adaptation at its first (current) snapshot.
+      const withPointer = await this.adaptationProjectService.update(
+        { id: adaptation.id },
+        { currentSnapshot: { connect: { id: snapshot.id } } },
+      );
+      return { adaptation: withPointer, snapshot };
     });
 
     await this.auditLogService.logCreate('studio.adaptation', adaptation.id, userId, {
@@ -565,7 +590,7 @@ export class StudioService {
         mustPreserve: input.mustPreserve,
       },
     );
-    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
     await this.auditLogService.logUpdate(
       'studio.adaptation_brief',
       adaptationId,
@@ -599,7 +624,7 @@ export class StudioService {
       { id: adaptationId },
       { status: 'BLUEPRINT_REVIEW' },
     );
-    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
     await this.auditLogService.logUpdate(
       'studio.adaptation_brief',
       adaptationId,
@@ -651,7 +676,7 @@ export class StudioService {
         message: '请先确认改编简报，再在改编蓝图中记录取舍。',
       });
     }
-    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
     const sourceChapter = await this.adaptationSourceChapterService.getById(input.sourceChapterId);
     if (!sourceChapter || sourceChapter.snapshotId !== snapshot.id) {
       throw apiError(CommonErrorCode.BadRequest, {
@@ -721,8 +746,8 @@ export class StudioService {
     adaptationId: string,
     query: StudioAdaptationSourceChapterListQuery,
   ): Promise<StudioAdaptationSourceChapterListResponse> {
-    await this.getOwnedAdaptation(userId, adaptationId);
-    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
     const chapters = await this.adaptationSourceChapterService.list(
       { snapshotId: snapshot.id },
       { page: query.page, limit: query.limit, orderBy: { chapterNumber: 'asc' } },
@@ -764,7 +789,7 @@ export class StudioService {
     await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
       status: 'scene_planning',
     });
-    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptationId));
+    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
   }
 
   async startScriptWriting(
@@ -796,7 +821,54 @@ export class StudioService {
     await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
       status: 'script_writing',
     });
-    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptationId));
+    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
+  }
+
+  async startReviewReady(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'SCRIPT_WRITING') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入剧本生成并编写场景剧本，再提交对照审阅。',
+      });
+    }
+    // PRD P13 对照审阅: a screenplay must exist before it can be reviewed.
+    const screenplayCount = await this.screenplayRevisionService.count({ adaptationId });
+    if (screenplayCount === 0) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先编写至少一个场景剧本，再提交对照审阅。',
+      });
+    }
+    const updated = await this.adaptationProjectService.update(
+      { id: adaptationId },
+      { status: 'REVIEW_READY' },
+    );
+    await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
+      status: 'review_ready',
+    });
+    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
+  }
+
+  async startDeliverable(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProjectResponse> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (adaptation.status !== 'REVIEW_READY') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先提交对照审阅，再标记为可交付。',
+      });
+    }
+    const updated = await this.adaptationProjectService.update(
+      { id: adaptationId },
+      { status: 'DELIVERABLE' },
+    );
+    await this.auditLogService.logUpdate('studio.adaptation_project', adaptationId, userId, {
+      status: 'deliverable',
+    });
+    return this.toAdaptation(updated, await this.getAdaptationSnapshot(adaptation.currentSnapshotId));
   }
 
   async listScenePlans(
@@ -928,7 +1000,7 @@ export class StudioService {
         message: '请先进入场景计划阶段，再建立场景溯源。',
       });
     }
-    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
     const sourceChapter = await this.adaptationSourceChapterService.getById(input.sourceChapterId);
     if (!sourceChapter || sourceChapter.snapshotId !== snapshot.id) {
       throw apiError(CommonErrorCode.BadRequest, {
@@ -1095,7 +1167,7 @@ export class StudioService {
     query: StudioAdaptationExportQuery,
   ): Promise<StudioAdaptationExportResponse> {
     const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
-    const snapshot = await this.getAdaptationSnapshot(adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
     const plans = await this.scenePlanService.list(
       { adaptationId, confirmedAt: { not: null } },
       { page: 1, limit: 200, orderBy: { episodeNumber: 'asc' } },
@@ -1194,6 +1266,313 @@ export class StudioService {
       episodeCount: episodes.length,
       warnings,
     };
+  }
+
+  async listStandaloneScreenplayScenes(
+    userId: string,
+    projectId: string,
+    query: StudioStandaloneScreenplaySceneListQuery,
+  ): Promise<StudioStandaloneScreenplaySceneListResponse> {
+    await this.getOwnedStandaloneScreenplay(userId, projectId);
+    const scenes = await this.standaloneScreenplaySceneService.list(
+      { projectId, ...(query.episodeNumber ? { episodeNumber: query.episodeNumber } : {}) },
+      {
+        page: query.page,
+        limit: query.limit,
+        orderBy: [{ episodeNumber: 'asc' }, { sceneNumber: 'asc' }],
+      },
+    );
+    return {
+      ...scenes,
+      list: scenes.list.map((scene) => this.toStandaloneScreenplayScene(scene)),
+    };
+  }
+
+  async saveStandaloneScreenplayScene(
+    userId: string,
+    projectId: string,
+    input: SaveStudioStandaloneScreenplayScene,
+  ): Promise<StudioStandaloneScreenplaySceneResponse> {
+    await this.getOwnedStandaloneScreenplay(userId, projectId);
+    const existing = await this.standaloneScreenplaySceneService.get({
+      projectId,
+      episodeNumber: input.episodeNumber,
+      sceneNumber: input.sceneNumber,
+    });
+    const data = {
+      title: input.title,
+      synopsis: input.synopsis,
+      status: input.status,
+    } as const;
+    const scene = existing
+      ? await this.standaloneScreenplaySceneService.update({ id: existing.id }, data)
+      : await this.standaloneScreenplaySceneService.create({
+          project: { connect: { id: projectId } },
+          episodeNumber: input.episodeNumber,
+          sceneNumber: input.sceneNumber,
+          ...data,
+        });
+    await this.auditLogService.logUpdate(
+      'studio.standalone_screenplay_scene',
+      scene.id,
+      userId,
+      { episodeNumber: input.episodeNumber, sceneNumber: input.sceneNumber, status: input.status },
+      { projectId },
+    );
+    return this.toStandaloneScreenplayScene(scene);
+  }
+
+  async listStandaloneScreenplayRevisions(
+    userId: string,
+    projectId: string,
+    sceneId: string,
+    query: StudioStandaloneScreenplayRevisionListQuery,
+  ): Promise<StudioStandaloneScreenplayRevisionListResponse> {
+    await this.getOwnedStandaloneScreenplayScene(userId, projectId, sceneId);
+    const revisions = await this.standaloneScreenplayRevisionService.list(
+      { projectId, sceneId },
+      { page: query.page, limit: query.limit, orderBy: { version: 'desc' } },
+    );
+    return {
+      ...revisions,
+      list: revisions.list.map((revision) => this.toStandaloneScreenplayRevision(revision)),
+    };
+  }
+
+  async createStandaloneScreenplayRevision(
+    userId: string,
+    projectId: string,
+    sceneId: string,
+    input: CreateStudioStandaloneScreenplayRevision,
+  ): Promise<StudioStandaloneScreenplayRevisionResponse> {
+    await this.getOwnedStandaloneScreenplayScene(userId, projectId, sceneId);
+    const revision = await this.unitOfWork.execute(async () => {
+      const { list } = await this.standaloneScreenplayRevisionService.list(
+        { sceneId },
+        { page: 1, limit: 1, orderBy: { version: 'desc' } },
+      );
+      return this.standaloneScreenplayRevisionService.create({
+        project: { connect: { id: projectId } },
+        scene: { connect: { id: sceneId } },
+        version: (list[0]?.version ?? 0) + 1,
+        content: input.content,
+        contentHash: this.hashContent(input.content),
+        wordCount: this.countWords(input.content),
+        editSummary: input.editSummary ?? null,
+      });
+    });
+    await this.auditLogService.logCreate('studio.standalone_screenplay_revision', revision.id, userId, {
+      projectId,
+      sceneId,
+      version: revision.version,
+    });
+    return this.toStandaloneScreenplayRevision(revision);
+  }
+
+  async exportStandaloneScreenplay(
+    userId: string,
+    projectId: string,
+    query: StudioStandaloneScreenplayExportQuery,
+  ): Promise<StudioStandaloneScreenplayExport> {
+    const project = await this.getOwnedStandaloneScreenplay(userId, projectId);
+    const scenes = await this.standaloneScreenplaySceneService.list(
+      { projectId },
+      { page: 1, limit: 2_000, orderBy: [{ episodeNumber: 'asc' }, { sceneNumber: 'asc' }] },
+    );
+    const sceneDrafts = await Promise.all(
+      scenes.list.map(async (scene) => {
+        const { list } = await this.standaloneScreenplayRevisionService.list(
+          { sceneId: scene.id },
+          { page: 1, limit: 1, orderBy: { version: 'desc' } },
+        );
+        return { scene, revision: list[0] ?? null };
+      }),
+    );
+    const warnings = sceneDrafts
+      .filter(({ revision }) => !revision)
+      .map(({ scene }) => `第 ${scene.episodeNumber} 集场景 ${scene.sceneNumber} 尚未编写正文。`);
+    const content =
+      query.format === 'fountain'
+        ? [
+            `Title: ${project.title}`,
+            'Credit: 独立剧本',
+            '',
+            '==',
+            '',
+            ...sceneDrafts.flatMap(({ scene, revision }) => [
+              `# 第 ${scene.episodeNumber} 集 · 场景 ${scene.sceneNumber} · ${scene.title}`,
+              ...(scene.synopsis ? [`> ${scene.synopsis}`, ''] : []),
+              revision?.content ?? `# 场景 ${scene.sceneNumber} · ${scene.title}（尚未编写）`,
+              '',
+            ]),
+          ].join('\n')
+        : [
+            `${project.title} · 独立剧本`,
+            '',
+            ...sceneDrafts.flatMap(({ scene, revision }) => [
+              `第 ${scene.episodeNumber} 集 · 场景 ${scene.sceneNumber} · ${scene.title}`,
+              scene.synopsis,
+              revision?.content ?? '（尚未编写场景剧本）',
+              '',
+            ]),
+          ].join('\n');
+    await this.auditLogService.logExport('studio.standalone_screenplay', userId, {
+      projectId,
+      format: query.format,
+      sceneCount: sceneDrafts.length,
+      warnings,
+    });
+    return {
+      filename: `${this.safeExportFilename(project.title)}-screenplay.${query.format === 'fountain' ? 'fountain' : 'txt'}`,
+      contentType: 'text/plain',
+      content,
+      episodeCount: new Set(sceneDrafts.map(({ scene }) => scene.episodeNumber)).size,
+      sceneCount: sceneDrafts.length,
+      warnings,
+    };
+  }
+
+  async listAdaptationSourceDrift(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationSourceDrift> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    const snapshot = await this.getAdaptationSnapshot(adaptation.currentSnapshotId);
+    // Compare the source novel's CURRENT finalized chapters against the
+    // immutable snapshot. Chapters finalized after the snapshot was taken
+    // appear in the source's final pointers but not in the snapshot — they are
+    // the "drift" the author must re-review (PRD P13 来源更新复核).
+    const [snapshotChapters, finalPointers, chapterPlans] = await Promise.all([
+      this.adaptationSourceChapterService.list(
+        { snapshotId: snapshot.id },
+        { page: 1, limit: 500, orderBy: { chapterNumber: 'asc' } },
+      ),
+      this.chapterFinalPointerService.list(
+        { projectId: adaptation.sourceProjectId },
+        { page: 1, limit: 500, orderBy: { chapterNumber: 'asc' } },
+      ),
+      this.chapterPlanService.list(
+        { projectId: adaptation.sourceProjectId },
+        { page: 1, limit: 500 },
+      ),
+    ]);
+    const snapshotChapterNumbers = new Set(
+      snapshotChapters.list.map((chapter) => chapter.chapterNumber),
+    );
+    const titleByChapter = new Map(
+      chapterPlans.list.map((plan) => [plan.chapterNumber, plan.title]),
+    );
+    const newChapters = finalPointers.list
+      .filter((pointer) => !snapshotChapterNumbers.has(pointer.chapterNumber))
+      .map((pointer) => ({
+        chapterNumber: pointer.chapterNumber,
+        title: titleByChapter.get(pointer.chapterNumber) ?? `第 ${pointer.chapterNumber} 章`,
+      }));
+
+    return {
+      snapshotChapterCount: snapshot.sourceChapterCount,
+      snapshotCreatedAt: snapshot.createdAt.toISOString(),
+      newChapters,
+    };
+  }
+
+  async markSourceSceneMappingsStale(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationMarkStaleResponse> {
+    await this.getOwnedAdaptation(userId, adaptationId);
+    // Bulk mark every non-stale mapping for re-review. The author triggers this
+    // after acknowledging source drift; individual mappings are then re-confirmed
+    // or revised via resolveSourceSceneMapping (C58).
+    const result = await this.sourceSceneMappingService.updateMany(
+      { adaptationId, status: { not: 'STALE' } },
+      { status: 'STALE' },
+    );
+    await this.auditLogService.logUpdate(
+      'studio.source_scene_mapping',
+      adaptationId,
+      userId,
+      { status: 'stale' },
+      { adaptationId, markedStaleCount: result.count },
+    );
+    return { markedStaleCount: result.count };
+  }
+
+  async createAdaptationResnapshot(
+    userId: string,
+    adaptationId: string,
+  ): Promise<StudioAdaptationProjectResponse> {
+    // PRD P13 来源更新复核: generate a NEW immutable snapshot from the source
+    // novel's current finalized chapters, repoint currentSnapshotId, and mark
+    // existing mappings stale for re-review. Prior snapshots stay queryable.
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    const sourceProject = await this.projectService.getById(adaptation.sourceProjectId);
+    if (!sourceProject) {
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '来源作品不存在，请联系支持人员。',
+      });
+    }
+    const pointers = await this.chapterFinalPointerService.list(
+      { projectId: adaptation.sourceProjectId },
+      { page: 1, limit: sourceProject.chapterCount, orderBy: { chapterNumber: 'asc' } },
+    );
+    if (pointers.total === 0) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '来源作品暂无定稿章节，无法生成新快照。',
+      });
+    }
+    const sourceChapters = await Promise.all(
+      pointers.list.map(async (pointer) => {
+        const revision = await this.chapterRevisionService.getById(pointer.revisionId);
+        if (!revision) {
+          throw apiError(CommonErrorCode.InternalServerError, {
+            message: '来源定稿章节缺失，请联系支持人员。',
+          });
+        }
+        const chapterPlan = await this.chapterPlanService.getById(revision.chapterPlanId);
+        return { revision, title: chapterPlan?.title ?? `第 ${revision.chapterNumber} 章` };
+      }),
+    );
+
+    const { snapshot } = await this.unitOfWork.execute(async () => {
+      const snapshot = await this.adaptationSourceSnapshotService.create({
+        adaptation: { connect: { id: adaptationId } },
+        sourceProject: { connect: { id: sourceProject.id } },
+        sourceProjectTitle: sourceProject.title,
+        sourceProjectUpdatedAt: sourceProject.updatedAt,
+        sourceChapterCount: sourceChapters.length,
+      });
+      await this.adaptationSourceChapterService.createMany(
+        sourceChapters.map(({ revision, title }) => ({
+          snapshotId: snapshot.id,
+          sourceRevisionId: revision.id,
+          chapterNumber: revision.chapterNumber,
+          title,
+          content: revision.content,
+          contentHash: revision.contentHash,
+          wordCount: revision.wordCount,
+        })),
+      );
+      await this.adaptationProjectService.update(
+        { id: adaptationId },
+        { currentSnapshot: { connect: { id: snapshot.id } } },
+      );
+      // Mark prior mappings stale so the author re-reviews against the new snapshot.
+      await this.sourceSceneMappingService.updateMany(
+        { adaptationId, status: { not: 'STALE' } },
+        { status: 'STALE' },
+      );
+      return { snapshot };
+    });
+
+    await this.auditLogService.logCreate(
+      'studio.adaptation_source_snapshot',
+      snapshot.id,
+      userId,
+      { adaptationId, sourceChapterCount: sourceChapters.length },
+    );
+    const updated = await this.getOwnedAdaptation(userId, adaptationId);
+    return this.toAdaptation(updated, snapshot);
   }
 
   async previewProjectImport(
@@ -2843,6 +3222,32 @@ export class StudioService {
     }
   }
 
+  private async getOwnedStandaloneScreenplay(
+    userId: string,
+    projectId: string,
+  ): Promise<StudioProject> {
+    const project = await this.getOwnedProject(userId, projectId);
+    if (project.format !== 'screenplay') {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '只有独立剧本项目可以使用剧本开发工作台。',
+      });
+    }
+    return project;
+  }
+
+  private async getOwnedStandaloneScreenplayScene(
+    userId: string,
+    projectId: string,
+    sceneId: string,
+  ): Promise<StudioStandaloneScreenplayScene> {
+    await this.getOwnedStandaloneScreenplay(userId, projectId);
+    const scene = await this.standaloneScreenplaySceneService.getById(sceneId);
+    if (!scene || scene.projectId !== projectId) {
+      throw apiError(CommonErrorCode.NotFound, { message: '剧本场景不存在。' });
+    }
+    return scene;
+  }
+
   private async getOwnedProject(userId: string, projectId: string): Promise<StudioProject> {
     const project = await this.projectService.getById(projectId);
     if (!project || project.ownerId !== userId) {
@@ -2864,9 +3269,14 @@ export class StudioService {
   }
 
   private async getAdaptationSnapshot(
-    adaptationId: string,
+    currentSnapshotId: string | null,
   ): Promise<StudioAdaptationSourceSnapshot> {
-    const snapshot = await this.adaptationSourceSnapshotService.get({ adaptationId });
+    if (!currentSnapshotId) {
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '改编来源快照缺失，请联系支持人员。',
+      });
+    }
+    const snapshot = await this.adaptationSourceSnapshotService.getById(currentSnapshotId);
     if (!snapshot) {
       throw apiError(CommonErrorCode.InternalServerError, {
         message: '改编来源快照缺失，请联系支持人员。',
@@ -3375,9 +3785,13 @@ export class StudioService {
       progress: run.progress,
       currentStep: run.currentStep,
       attemptCount: run.attemptCount,
-      ...(Object.keys(artifact).length > 0 ? { artifact } : {}),
-      ...(run.type === 'CHAPTER_DRAFT' && run.status === 'SUCCEEDED' ? { revisionId: run.id } : {}),
-      ...(run.error ? { error: run.error } : {}),
+      // GenerationJobSchema declares these via `.nullish().transform()`, which
+      // Zod 4 infers as required keys. Always emit them (undefined when absent);
+      // JSON serialization drops undefined, so the wire format is unchanged.
+      artifact: (Object.keys(artifact).length > 0 ? artifact : undefined) as GenerationJob['artifact'],
+      revisionId: run.type === 'CHAPTER_DRAFT' && run.status === 'SUCCEEDED' ? run.id : undefined,
+      modelConfig: (run.modelConfig ?? undefined) as GenerationJob['modelConfig'],
+      error: run.error ?? undefined,
       createdAt: run.createdAt.toISOString(),
       updatedAt: run.updatedAt.toISOString(),
     };
@@ -3549,6 +3963,38 @@ export class StudioService {
       sceneNumber: revision.sceneNumber,
       source: source[revision.source],
       sourceRevisionId: revision.sourceRevisionId,
+      version: revision.version,
+      content: revision.content,
+      contentHash: revision.contentHash,
+      wordCount: revision.wordCount,
+      editSummary: revision.editSummary,
+      createdAt: revision.createdAt.toISOString(),
+    };
+  }
+
+  private toStandaloneScreenplayScene(
+    scene: StudioStandaloneScreenplayScene,
+  ): StudioStandaloneScreenplaySceneResponse {
+    return {
+      id: scene.id,
+      projectId: scene.projectId,
+      episodeNumber: scene.episodeNumber,
+      sceneNumber: scene.sceneNumber,
+      title: scene.title,
+      synopsis: scene.synopsis,
+      status: scene.status as StudioStandaloneScreenplaySceneResponse['status'],
+      createdAt: scene.createdAt.toISOString(),
+      updatedAt: scene.updatedAt.toISOString(),
+    };
+  }
+
+  private toStandaloneScreenplayRevision(
+    revision: StudioStandaloneScreenplayRevision,
+  ): StudioStandaloneScreenplayRevisionResponse {
+    return {
+      id: revision.id,
+      projectId: revision.projectId,
+      sceneId: revision.sceneId,
       version: revision.version,
       content: revision.content,
       contentHash: revision.contentHash,

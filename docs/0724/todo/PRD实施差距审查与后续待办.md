@@ -317,6 +317,12 @@ P0-01 正文修订
 - 已实施（取舍领域基础，2026-07-25）：新增 `StudioAdaptationDecision` 只追加模型和增量迁移。`GET/POST /studio/adaptations/:adaptationId/decisions` 仅对本人已进入 `blueprint_review` 的改编项目可创建或读取；每条取舍强制关联该项目不可变来源快照内的单个章节，记录类型、影响等级、提议和理由。`POST .../:decisionId/resolve` 仅允许一次性将待处理项裁决为接受、编辑或拒绝，保留处理理由、时间与审计记录。
 - 待实施（M1 后续）：改编蓝图的 P13 取舍审阅界面、场景计划看板、原作-场景映射、逐场剧本生成运行时、差异审阅、来源更新复核、剧本导出与 P12 独立编辑工作台。当前小说工作台中的简报区仅为 M1 过渡入口，不应被误标为完整 P13 三栏工作台；新增决策迁移须在对应环境执行后才可启用 API。
 
+### C65 双文体一句话起稿与改编路径解耦
+
+- 已实施（产品/入口，2026-07-25）：将“句子起稿”拆为同级的`一句话写小说`与`一句话写剧本`。侧栏和作品库首屏均清楚区分两条独立起稿路径；`小说转剧本`仍是第三条、仅在至少一章定稿小说内可用的改编入口，保留来源快照和授权确认。
+- 已实施（契约/Runtime，2026-07-25）：`CreateStudioProject.format` 恢复接受 `novel | screenplay`；独立剧本任务在 Python Runtime 生成剧本开发蓝图与分集节拍，不读取小说正文、事实或改编快照。数据库项目格式字段已支持该值，本轮无迁移。
+- 已实施（独立剧本 P12 最小切片，2026-07-26）：独立剧本拥有专属分集/场景计划、Fountain 不可变修订、Fountain/txt 导出与“剧本开发”路由；服务端按 `project.format === screenplay` 强校验，不能从小说章节、事实或改编快照路径绕入。待部署：`20260726090000_standalone_screenplay_workspace` 必须先在隔离 PostgreSQL 演练，再执行迁移部署。待实施：结构化 Fountain 元素解析、专用剧本审校、逐场 AI 生成与人物小传；不得将小说的“章节创作、事实、定稿”页面表述成完整独立剧本工作流。
+
 ### C54 实施与复核：改编来源章节只读 API
 
 - 已实施（契约，2026-07-25）：新增独立 `StudioAdaptationSourceChapterSchema`（id、snapshotId、sourceRevisionId、chapterNumber、title、content、contentHash、wordCount、createdAt）与 `StudioAdaptationSourceChapterListQuery/Response` 分页类型。此前来源章节仅作为取舍响应内的嵌套对象存在，无法被场景计划、原作-场景映射等下游阶段独立读取。
@@ -403,3 +409,53 @@ P0-01 正文修订
 - 本会话（C54-C64）累计新增 3 份迁移：`20260725180000_studio_scene_plans`、`20260725200000_studio_source_scene_mappings`、`20260725210000_studio_screenplay_scene_revisions`（含 `studio_source_mapping_status`、`studio_screenplay_revision_source` 枚举）。
 - 仍待实施（非本轮代码可完成）：(1) 三份迁移须先在隔离 PostgreSQL 演练再部署；(2) 剧本修订前端编辑器、剧本导出前端下载入口、逐场剧本生成运行时（AI 来源）、来源更新自动标 stale、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续；(3) 独立页面路由、真实作者可用性测试与 M1 准入数据采集需部署或用户研究环境。
 - 已知既存阻断（与本轮无关，状态与 C59 一致）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 报告 70 条连带错误；`backend/tests/test_runtime_api.py` 8 项失败仍源于工作区既有的 `backend/runtime/engine.py` 多模型 `RuntimeSettings` 改动，C60-C64 的 TypeScript 改动不可能影响该结果，未触碰 `backend/`。
+
+### C66 实施与复核：场景剧本编辑工作台（P12 剧本编辑）
+
+- 已实施（Web，2026-07-26）：工作台在 `script_writing` 及之后阶段加载并展示「场景剧本」面板，消费 C62 的 `listScreenplaySceneRevisions/createScreenplaySceneRevision`：按集/场景编写 Fountain 剧本正文（含编辑摘要），保存生成新的不可变版本；版本列表按最新在前展示每条修订的集/场景/版本/字数/摘要/正文，历史不可变、可追溯。此前 C62 的剧本修订 API 完整但无前端消费。
+- 已通过：Web studio 测试 23 项（+1，覆盖 script_writing 阶段保存场景剧本修订写回）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：场景剧本编辑器仍以「集数/场景号」手填并由后端校验存在性（Select 非交互 mock 限制），剧本导出前端下载入口、逐场 AI 生成运行时、来源更新自动标 stale、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续。
+
+### C67 实施与复核：剧本导出下载入口（AC-13 可交付前端）
+
+- 已实施（Web，2026-07-26）：场景剧本面板提供「导出剧本」入口（Fountain/TXT 切换），调用 C64 的 `exportAdaptation` 并通过 Blob + `URL.createObjectURL` 触发浏览器下载，复用小说导出的下载模式。此前 C64 的导出 API 完整但无前端入口。
+- 已通过：Web studio 测试 24 项（+1，覆盖 script_writing 阶段以默认 Fountain 格式请求导出并触发下载）、`apps/web` `tsc --noEmit` 类型检查通过（测试中对 jsdom 未实现的 `URL.createObjectURL` 做了桩）。
+- 待实施：导出格式切换依赖 Select（测试以默认值覆盖）；逐场 AI 生成运行时、来源更新自动标 stale、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续。
+
+### C68 实施与复核：来源更新漂移检测与溯源批量复核（P13 来源更新复核）
+
+- 已实施（契约/API，2026-07-26）：新增 `GET /adaptations/:adaptationId/source-drift` 与 `POST /adaptations/:adaptationId/source-mappings/stale`。漂移检测对比原作**当前**定稿章节指针与不可变来源快照，返回快照之后新定稿的章节（章节号+标题）；批量标 stale 把该改编所有非 stale 溯源一次性置为 `stale` 供作者逐条复核，写入审计。无新迁移。
+- 设计意图：在「快照 1:1 → 完整 re-snapshot（需 1:N schema 改造，留待后续）」落地前，先提供来源变更的**发现 + 复核信号**闭环，落实 PRD「来源更新只标记受影响溯源、提供安全复核路径」。
+- 已通过：契约 studio 测试 10 项、`apps/api` studio 测试 61 项（服务 57 + worker 4；+2，覆盖漂移检测与批量标 stale）、API `tsconfig.type-check.json` 与 contracts `tsc --noEmit` 类型检查通过。
+- 附带修复（既存回归，非本轮引入）：已确认 `2c16883` 提交基线（本轮改动 stash 后）即存在 `toGenerationJob` 类型错误——`GenerationJobSchema` 的 `artifact/revisionId/modelConfig/error` 经 `.nullish().transform()` 被 Zod 4 推断为必填键，而 mapper 此前用条件展开省略空值。本轮将这些键改为始终输出（缺省 `undefined`，`JSON.stringify` 丢弃 `undefined`，**线上报文不变**），解除类型阻断。该回归源于并发的运行时多模型改造，与改编管线无关。
+- 待实施：完整 re-snapshot（1:N 快照历史）、来源变更 webhook 自动触发、逐场 AI 生成运行时、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续。
+
+### C69 实施与复核：来源更新漂移前端与一键复核（P13 来源更新复核前端）
+
+- 已实施（Web，2026-07-26）：场景溯源面板在 `scene_planning` 及之后阶段加载并展示来源漂移——原作在快照之后新定稿的章节超过 0 时，徽章提示「来源新增 N 章」并列出章节，提供「标记溯源待复核」入口；点击调用 C68 的 `markSourceSceneMappingsStale`，成功后重新拉取溯源与漂移。此前 C68 的漂移/stale API 完整但无前端消费。
+- 已通过：Web studio 测试 25 项（+1，覆盖漂移可见与一键标 stale 写回）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：完整 re-snapshot（1:N 快照历史）、来源变更 webhook 自动触发（当前需作者主动检测）、逐场 AI 生成运行时、对照审阅三栏与 P12 独立三栏工作台仍属改编管线后续。
+
+### C70 复核结论：C66-C69 改编工作台前端闭环 + 既存类型回归修复
+
+- 本轮沿 PRD 第 38 章继续推进 4 个增量（C66-C69），把 C62-C64 已就绪的后端能力（场景剧本不可变修订、Fountain/txt 导出、来源漂移检测）全部接到工作台前端，并补齐来源更新复核的「检测 + 一键标 stale」闭环。所有写入仍走 Zod-first 契约、DB service 层与审计；来源漂移与溯源标 stale 均为只读检测 + 显式作者动作，不引入新迁移。
+- 附带修复（既存回归，非本轮引入，已在 C68 标注）：`toGenerationJob` 此前因 `GenerationJobSchema` 的 `.nullish().transform()` 被 Zod 4 推断为必填键而类型不匹配（确认 `2c16883` 基线即失败）；本轮将 `artifact/revisionId/modelConfig/error` 改为始终输出、缺省 `undefined`（JSON 序列化丢弃 undefined，线上报文不变），解除全仓类型阻断。
+- 已通过：`pnpm test`（`apps/api` studio 61 = 服务 57 + worker 4；`apps/web` studio 25 + page 2；`packages/contracts` 10；全仓 9/9 任务绿）、`pnpm type-check` 6/6、`git diff --check` 干净。
+- 已通过质量门禁（与本轮相关）：`check:architecture`、`check:list-contracts`（C66/C69 的 screenplay/mapping/drift 端点遵循标准分页/响应模式）、`check:sensitive-logs`、`check:cross-project-boundaries` 全部 PASS。
+- Python 运行时状态更新（与本轮无关，但与全仓门禁相关）：`backend/tests` 当前 **24 通过**（C65 时为 8 失败/14 通过），表明并发的 `backend/runtime/engine.py` 多模型 `RuntimeSettings` 改造已由该工作流完成并恢复绿色；本轮 TypeScript 改动未触碰 `backend/`。
+- 仍待实施（非本轮代码可完成）：(1) 完整 re-snapshot（需快照 1:N schema 改造 + 迁移）、来源变更 webhook 自动触发；(2) 逐场剧本生成运行时（AI 来源）、对照审阅三栏、P12 独立三栏工作台（注意：工作区中并发的 `apps/web/components/studio/studio-project-workspace.tsx`、`apps/web/lib/studio/project-routes.ts` 正在推进独立页面路由，本轮未触碰）；(3) 三份迁移（C56/C58/C62）须先在隔离 PostgreSQL 演练再部署；(4) 真实作者可用性测试与 M1 准入数据采集需部署或用户研究环境。
+- 已知既存阻断（与本轮无关）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 报告 70 条连带错误，未伪造历史资料。
+
+### C71 实施与复核：改编状态机收尾（review_ready / deliverable）
+
+- 已实施（契约/API，2026-07-26）：新增 `POST /adaptations/:adaptationId/review-ready/start`（`script_writing → review_ready`，门禁「≥1 场景剧本修订」）与 `POST /adaptations/:adaptationId/deliverable/start`（`review_ready → deliverable`）。至此 `StudioAdaptationStatus` 六态全部由服务方法推进，状态转换均写审计。无新迁移。
+- 已实施（Web，2026-07-26）：场景剧本面板在 `script_writing` 提供「提交对照审阅」、在 `review_ready` 提供「标记可交付」入口，成功后用返回对象更新作品库状态。
+- 已通过：`apps/api` studio 服务测试 58 项（+1，覆盖无剧本阻断 review_ready 与 review_ready→deliverable 链路）、Web studio 测试 27 项（+1，覆盖提交对照审阅）、API `tsconfig.type-check.json` 与 `apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：对照审阅三栏 UI（review_ready 阶段的内容比对）、逐场 AI 剧本生成运行时、完整 re-snapshot、改编事件 SSE 仍属后续。
+
+### C72 实施与复核：对照审阅三栏（P13 对照审阅）
+
+- 已实施（Web，2026-07-26）：`review_ready` 及 `deliverable` 阶段新增「对照审阅」面板，按场景把**不可变来源章节正文**（左）、**最新场景剧本修订**（中，按 episode/scene 取最大版本）与**溯源状态/证据**（右）三栏对齐，无新 API——复用 C58 溯源、C62 剧本修订、C54 来源章节三组已加载只读数据，落实 PRD「按场景/事件对齐、左原作-中剧本-右取舍/证据」。
+- 已实施：扩展 `selectedAdaptation` 副作用，使 `deliverable` 阶段也加载溯源、来源章节与漂移，保证对照审阅在交付态仍可见。
+- 已通过：Web studio 测试 28 项（+1，覆盖 review_ready 下原作正文与剧本同屏对照）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：左右联动滚动、人工标注/裁决写入、逐场 AI 生成运行时、完整 re-snapshot、改编事件 SSE 仍属后续。

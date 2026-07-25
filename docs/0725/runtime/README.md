@@ -54,7 +54,7 @@ Studio 模块  (apps/api/src/modules/studio/)  + cron(studio-generation / studio
 | **章节草稿（简化版）** | `engine._chapter_draft_prompt`+`invoke_with_cleaning` (engine.py) | ⚠️ 部分 | 否 | 是 |
 | **章节草稿（完整编排版）** | `generate_chapter_draft` (chapter.py:526) | ❌ 未暴露 | **是** | 是 |
 | 构造章节提示词 | `build_chapter_prompt` (chapter.py:285) | ❌ | 是 | 是 |
-| 前文摘要（LLM） | `summarize_recent_chapters` (chapter.py:42) | ❌ | 否 | 否(传文本) |
+| 前文摘要（LLM） | `summarize_recent_chapters` (chapter.py:42) | ✅ `POST /v1/chapters/summarize-recent` | 否 | 否(传文本) |
 | 取最近 N 章正文 | `get_last_n_chapters_text` (chapter.py:27) | ❌ | 否 | 是 |
 | 知识库导入 | `import_knowledge_file` (knowledge.py:51) | ❌ | **是** | 是 |
 | 向量库初始化/加载/更新 | `init/load/update_vector_store` (vectorstore_utils.py) | ❌ | **是** | 是 |
@@ -63,10 +63,10 @@ Studio 模块  (apps/api/src/modules/studio/)  + cron(studio-generation / studio
 | 清空向量库 | `clear_vector_store` (vectorstore_utils.py:33) | ❌ | 否 | 是 |
 | **章节定稿（完整版）** | `finalize_chapter` (finalization.py:37) | ❌ | **是** | 是 |
 | 章节定稿（简化 summary/index） | `engine.execute_finalization_task` | ⚠️ 部分 | 否 | 否 |
-| **章节扩写** | `enrich_chapter_text` (finalization.py:115) | ❌ | 否 | 否(传文本) |
+| **章节扩写** | `enrich_chapter_text` (finalization.py:115) | ✅ `POST /v1/chapters/enrich` | 否 | 否(传文本) |
 | **一致性校验（LLM）** | `check_consistency` (consistency_checker.py:27) | ✅ `POST /v1/reviews/consistency` | 否 | 否(传文本) |
 | 硬事实校验（正则） | `api.py` 内联 | ✅ | 否 | 否 |
-| 蓝图解析为章节信息 | `parse_chapter_blueprint` / `get_chapter_info_from_blueprint` (chapter_directory_parser.py) | ❌ | 否 | 否(传文本) |
+| 蓝图解析为章节信息 | `parse_chapter_blueprint` / `get_chapter_info_from_blueprint` (chapter_directory_parser.py) | ✅ `POST /v1/chapters/parse-blueprint` | 否 | 否(传文本) |
 
 ### 差距结论
 
@@ -231,7 +231,7 @@ NestJS Studio
 | **B. 简化版↔完整版并存** | 现有 chapter_draft 简化版是否保留 | 新增 `chapter_draft_full` 与之并存，灰度后下线简化版 |
 | **C. 文件系统耦合** | novel_generator 大量读写 workspace 文件 | 沿用 `workspace_for(project_id, run_id)`；多实例横向扩展需共享存储（后续） |
 | **D. 多模型参数透传** | 完整版函数需 base_url/key/model/interface_format | 统一从 RuntimeSettings 注入，分角色复用 `LLM_MODEL_*` |
-| **E. 长任务超时** | NestJS 客户端现 timeout 15s | job 创建即返回 202，长结果走 `getJob` 轮询（既有模式），同步端点单独调高 timeout |
+| **E. 长任务超时** | NestJS 客户端原 timeout 15s | ✅ 已解决：`request()` 支持按调用超时；同步 LLM 端点(enrich/summarize/consistency)用 `NOVEL_RUNTIME_LLM_TIMEOUT_MS`(默认 120s)，其余用 `NOVEL_RUNTIME_TIMEOUT_MS`(默认 15s)；超长任务仍建议走 job |
 
 ---
 

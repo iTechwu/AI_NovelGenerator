@@ -38,7 +38,7 @@ export class StudioAdaptationSourceSnapshotService extends TransactionalServiceB
 
   @HandlePrismaError(DbOperationType.QUERY)
   async getByAdaptationId(value: string, additional?: { select?: Prisma.StudioAdaptationSourceSnapshotSelect; include?: Prisma.StudioAdaptationSourceSnapshotInclude }): Promise<StudioAdaptationSourceSnapshot | null> {
-    return this.getReadClient().studioAdaptationSourceSnapshot.findUnique({
+    return this.getReadClient().studioAdaptationSourceSnapshot.findFirst({
       where: { adaptationId: value },
       ...additional,
     });

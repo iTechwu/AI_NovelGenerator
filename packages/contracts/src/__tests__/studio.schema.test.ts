@@ -9,6 +9,13 @@ import {
   GenerationJobSchema,
   ResolveStudioReviewFindingSchema,
   StudioProjectExportQuerySchema,
+  ChapterEnrichRequestSchema,
+  ChapterSummarizeRequestSchema,
+  ConsistencyReviewRequestSchema,
+  BlueprintParseResultSchema,
+  ParsedChapterSchema,
+  SaveStudioStandaloneScreenplaySceneSchema,
+  CreateStudioStandaloneScreenplayRevisionSchema,
 } from '../schemas/studio.schema';
 
 describe('studio schemas', () => {
@@ -26,13 +33,13 @@ describe('studio schemas', () => {
       generateOutline: true,
     });
     expect(
-      CreateStudioProjectSchema.safeParse({
+      CreateStudioProjectSchema.parse({
         title: '雾港来信',
         format: 'screenplay',
         genre: '悬疑',
         premise: '一名失踪多年的记者寄回一封信，迫使女儿回到封锁的港口查明真相。',
-      }).success,
-    ).toBe(false);
+      }).format,
+    ).toBe('screenplay');
   });
 
   it('accepts a completed runtime job returned through NestJS', () => {
@@ -99,6 +106,21 @@ describe('studio schemas', () => {
         rightsConfirmed: true,
       }),
     ).toMatchObject({ targetFormat: 'short_drama', rightsConfirmed: true });
+  });
+
+  it('validates an independent screenplay scene separately from adaptation inputs', () => {
+    expect(
+      SaveStudioStandaloneScreenplaySceneSchema.parse({
+        episodeNumber: 1,
+        sceneNumber: 2,
+        title: '匿名录像',
+      }),
+    ).toMatchObject({ status: 'draft', synopsis: '' });
+    expect(
+      CreateStudioStandaloneScreenplayRevisionSchema.safeParse({
+        content: 'INT. 码头仓库 - 夜\n\n林舟打开录像机。',
+      }).success,
+    ).toBe(true);
   });
 
   it('keeps brief edits bounded while allowing an author to complete them before confirmation', () => {
@@ -214,5 +236,70 @@ describe('studio schemas', () => {
         resolvedValue: '记者',
       }).success,
     ).toBe(true);
+  });
+
+  it('validates runtime LLM review/enrich requests at the boundary', () => {
+    expect(
+      ConsistencyReviewRequestSchema.parse({ chapterText: '林晚推开柴门，寒风灌入。' }),
+    ).toMatchObject({
+      novelSetting: '',
+      plotArcs: '',
+      chapterText: '林晚推开柴门，寒风灌入。',
+    });
+    // chapterText is required
+    expect(ConsistencyReviewRequestSchema.safeParse({ novelSetting: 'x' }).success).toBe(false);
+
+    expect(
+      ChapterEnrichRequestSchema.safeParse({ chapterText: '正文', targetWords: 3000 }).success,
+    ).toBe(true);
+    // targetWords bounds: [100, 20000]
+    expect(
+      ChapterEnrichRequestSchema.safeParse({ chapterText: '正文', targetWords: 50 }).success,
+    ).toBe(false);
+    expect(
+      ChapterEnrichRequestSchema.safeParse({ chapterText: '正文', targetWords: 99_999 }).success,
+    ).toBe(false);
+  });
+
+  it('parses structured chapter info from a blueprint and tolerates missing fields', () => {
+    const chapters = BlueprintParseResultSchema.parse({
+      chapters: [
+        { chapterNumber: 1, chapterTitle: '寒夜残谱', chapterRole: '开篇' },
+        {
+          chapterNumber: 2,
+          chapterTitle: '马蹄声近',
+          chapterRole: '冲突升级',
+          chapterPurpose: '引入威胁',
+          suspenseLevel: '中',
+          foreshadowing: '来者身份',
+          plotTwistLevel: '中',
+          chapterSummary: '马蹄逼近。',
+        },
+      ],
+    }).chapters;
+    expect(chapters[0]).toMatchObject({ chapterNumber: 1, chapterTitle: '寒夜残谱', chapterPurpose: '' });
+    expect(chapters[1].chapterSummary).toBe('马蹄逼近。');
+    // ParsedChapter requires chapterNumber
+    expect(ParsedChapterSchema.safeParse({ chapterTitle: '无章号' }).success).toBe(false);
+  });
+
+  it('feeds parsed chapter info into the summarize-recent request (reuse ParsedChapter)', () => {
+    const req = ChapterSummarizeRequestSchema.parse({
+      chaptersText: ['第一章正文。', '第二章正文。'],
+      chapterNumber: 3,
+      chapterInfo: { chapterNumber: 3, chapterTitle: '夜探黑风寨' },
+      nextChapterInfo: { chapterNumber: 4, chapterTitle: '真相一角' },
+    });
+    expect(req.chapterInfo).toMatchObject({ chapterNumber: 3, chapterRole: '' });
+    expect(req.nextChapterInfo.chapterTitle).toBe('真相一角');
+    // chapterInfo must carry chapterNumber (ParsedChapter contract)
+    expect(
+      ChapterSummarizeRequestSchema.safeParse({
+        chaptersText: [],
+        chapterNumber: 3,
+        chapterInfo: { chapterTitle: '缺章号' },
+        nextChapterInfo: { chapterNumber: 4 },
+      }).success,
+    ).toBe(false);
   });
 });

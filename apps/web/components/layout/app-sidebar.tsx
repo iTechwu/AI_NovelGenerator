@@ -18,7 +18,6 @@ import { cn } from '@repo/ui/lib/utils';
 import {
   BookMarked,
   Clapperboard,
-  FilePlus2,
   FileStack,
   FileUp,
   FolderOpen,
@@ -32,6 +31,7 @@ import {
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useApp, useIsAdmin } from '@/providers';
+import type { StudioProjectSection } from '@/lib/studio/project-routes';
 import {
   emptyProjectNavigationState,
   PROJECT_NAVIGATION_EVENT,
@@ -49,9 +49,10 @@ interface NavItem {
   title?: string;
   href: string;
   anchor?: boolean;
+  workspaceSection?: StudioProjectSection;
   icon: ComponentType<{ className?: string }>;
   adminOnly?: boolean;
-  availability?: 'always' | 'project' | 'blueprint' | 'chapter' | 'draft' | 'adaptation';
+  availability?: 'always' | 'project' | 'blueprint' | 'chapter' | 'draft' | 'adaptation' | 'screenplay';
   disabledDescription?: string;
 }
 
@@ -65,13 +66,19 @@ const navGroups: NavGroup[] = [
     title: '开始创作',
     items: [
       {
-        title: '新建作品',
-        href: '#story-setup',
+        title: '一句话写小说',
+        href: '#novel-setup',
         anchor: true,
-        icon: FilePlus2,
+        icon: BookMarked,
       },
       {
-        title: '导入旧作',
+        title: '一句话写剧本',
+        href: '#screenplay-setup',
+        anchor: true,
+        icon: Clapperboard,
+      },
+      {
+        title: '导入小说存稿',
         href: '#legacy-import',
         anchor: true,
         icon: FileUp,
@@ -90,8 +97,8 @@ const navGroups: NavGroup[] = [
     items: [
       {
         title: '小说转剧本',
-        href: '#adaptation-workspace',
-        anchor: true,
+        href: '',
+        workspaceSection: 'adaptation',
         icon: Clapperboard,
         availability: 'adaptation',
         disabledDescription: '至少定稿一章小说后即可开始改编',
@@ -104,43 +111,51 @@ const navGroups: NavGroup[] = [
     items: [
       {
         title: '作品概览',
-        href: '#project-overview',
-        anchor: true,
+        href: '',
+        workspaceSection: 'overview',
         icon: LayoutDashboard,
         availability: 'project',
       },
       {
         title: '蓝图与大纲',
-        href: '#blueprint-workspace',
-        anchor: true,
+        href: '',
+        workspaceSection: 'blueprint',
         icon: FileStack,
         availability: 'blueprint',
       },
       {
+        title: '剧本开发',
+        href: '',
+        workspaceSection: 'screenplay',
+        icon: Clapperboard,
+        availability: 'screenplay',
+        disabledDescription: '独立剧本生成蓝图后，可在此规划分场并编写正文',
+      },
+      {
         title: '章节创作',
-        href: '#chapter-workspace',
-        anchor: true,
+        href: '',
+        workspaceSection: 'chapters',
         icon: PenLine,
         availability: 'chapter',
       },
       {
         title: '质量与评审',
-        href: '#review-workspace',
-        anchor: true,
+        href: '',
+        workspaceSection: 'review',
         icon: ShieldCheck,
         availability: 'draft',
       },
       {
         title: '设定与事实',
-        href: '#facts-workspace',
-        anchor: true,
+        href: '',
+        workspaceSection: 'facts',
         icon: BookMarked,
         availability: 'draft',
       },
       {
         title: '版本与导出',
-        href: '#version-export',
-        anchor: true,
+        href: '',
+        workspaceSection: 'versions',
         icon: ScrollText,
         availability: 'draft',
       },
@@ -173,12 +188,14 @@ const navGroups: NavGroup[] = [
 // Memoized nav item component
 const NavItemComponent = memo(function NavItemComponent({
   item,
+  href,
   isActive,
   isDisabled,
   title,
   disabledDescription,
 }: {
   item: NavItem;
+  href: string;
   isActive: boolean;
   isDisabled: boolean;
   title: string;
@@ -190,7 +207,7 @@ const NavItemComponent = memo(function NavItemComponent({
   );
 
   return (
-    <SidebarMenuItem key={item.href}>
+    <SidebarMenuItem key={href}>
       <SidebarMenuButton
         asChild
         aria-disabled={isDisabled || undefined}
@@ -211,7 +228,7 @@ const NavItemComponent = memo(function NavItemComponent({
             <span className="truncate group-data-[collapsible=icon]:hidden">{title}</span>
           </span>
         ) : item.anchor ? (
-          <a href={item.href} className={itemClassName}>
+          <a href={href} className={itemClassName}>
             <item.icon className={cn('size-[18px] shrink-0', isActive ? 'text-primary' : '')} />
             <span className="truncate group-data-[collapsible=icon]:hidden">{title}</span>
             {isActive && (
@@ -219,7 +236,7 @@ const NavItemComponent = memo(function NavItemComponent({
             )}
           </a>
         ) : (
-          <Link href={item.href} className={itemClassName}>
+          <Link href={href} className={itemClassName}>
             <item.icon className={cn('size-[18px] shrink-0', isActive ? 'text-primary' : '')} />
             <span className="truncate group-data-[collapsible=icon]:hidden">{title}</span>
             {isActive && (
@@ -243,6 +260,10 @@ export function AppSidebar() {
   );
 
   const currentPath = useMemo(() => pathname || '/', [pathname]);
+  const routeProjectId = useMemo(
+    () => currentPath.match(/^\/studio\/([^/]+)/)?.[1] ?? projectNavigation.projectId,
+    [currentPath, projectNavigation.projectId],
+  );
 
   useEffect(() => {
     const syncActiveAnchor = () => {
@@ -279,6 +300,8 @@ export function AppSidebar() {
 
   const isItemAvailable = useCallback(
     (item: NavItem) => {
+      if (item.availability === 'screenplay') return projectNavigation.projectFormat === 'screenplay';
+      if (item.workspaceSection && routeProjectId) return true;
       switch (item.availability) {
         case 'project':
           return projectNavigation.hasProject;
@@ -294,11 +317,20 @@ export function AppSidebar() {
           return true;
       }
     },
-    [projectNavigation],
+    [projectNavigation, routeProjectId],
+  );
+
+  const resolveItemHref = useCallback(
+    (item: NavItem) =>
+      item.workspaceSection && routeProjectId
+        ? `/studio/${routeProjectId}/${item.workspaceSection}`
+        : item.href,
+    [routeProjectId],
   );
 
   const projectGuide = useMemo(() => {
     if (!projectNavigation.hasProject) return '打开作品后解锁完整工作区';
+    if (projectNavigation.projectFormat === 'screenplay') return '独立剧本：按分集与场景持续创作';
     if (!projectNavigation.hasBlueprint) return '等待蓝图生成后继续';
     if (!projectNavigation.hasChapterWorkspace) return '确认蓝图后进入章节创作';
     if (!projectNavigation.hasDraftWorkspace) return '生成章节草稿后解锁审校与交付';
@@ -307,10 +339,10 @@ export function AppSidebar() {
 
   // Memoize active state checker
   const isItemActive = useCallback(
-    (item: NavItem) =>
+    (item: NavItem, href: string) =>
       item.anchor
         ? currentPath === '/' && activeAnchor === item.href
-        : currentPath === item.href || currentPath.startsWith(`${item.href}/`),
+        : currentPath === href || currentPath.startsWith(`${href}/`),
     [activeAnchor, currentPath],
   );
 
@@ -339,14 +371,20 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu className="gap-1 px-2">
               {group.items.map((item) => (
-                <NavItemComponent
-                  key={item.href}
-                  item={item}
-                  isActive={isItemActive(item)}
-                  isDisabled={!isItemAvailable(item)}
-                  title={getItemTitle(item)}
-                  disabledDescription={item.disabledDescription ?? projectGuide}
-                />
+                (() => {
+                  const href = resolveItemHref(item);
+                  return (
+                    <NavItemComponent
+                      key={item.workspaceSection ?? item.href}
+                      item={item}
+                      href={href}
+                      isActive={isItemActive(item, href)}
+                      isDisabled={!isItemAvailable(item)}
+                      title={getItemTitle(item)}
+                      disabledDescription={item.disabledDescription ?? projectGuide}
+                    />
+                  );
+                })()
               ))}
             </SidebarMenu>
           </SidebarGroupContent>
@@ -358,6 +396,7 @@ export function AppSidebar() {
       getItemTitle,
       isItemActive,
       isItemAvailable,
+      resolveItemHref,
       projectGuide,
       projectNavigation.hasAdaptationSource,
     ],

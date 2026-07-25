@@ -5,12 +5,24 @@ import { WINSTON_MODULE_PROVIDER } from 'nest-winston';
 import type { Logger } from 'winston';
 import { z } from 'zod';
 import {
+  BlueprintParseRequestSchema,
+  BlueprintParseResultSchema,
+  ChapterEnrichRequestSchema,
+  ChapterEnrichResultSchema,
+  ChapterSummarizeRequestSchema,
+  ChapterSummarizeResultSchema,
   ConsistencyReviewRequestSchema,
   ConsistencyReviewResultSchema,
   CreateStudioProjectSchema,
   GenerationJobSchema,
   StudioBlueprintSchema,
   StudioChapterPlanSchema,
+  type BlueprintParseRequest,
+  type BlueprintParseResult,
+  type ChapterEnrichRequest,
+  type ChapterEnrichResult,
+  type ChapterSummarizeRequest,
+  type ChapterSummarizeResult,
   type ConsistencyReviewRequest,
   type ConsistencyReviewResult,
   type CreateStudioChapterDraft,
@@ -72,6 +84,8 @@ const InternalHardFactReviewFindingSchema = z.object({
 export class NovelRuntimeClient {
   private readonly baseUrl: string;
   private readonly sharedSecret: string;
+  private readonly defaultTimeoutMs: number;
+  private readonly llmTimeoutMs: number;
 
   constructor(
     private readonly http: HttpService,
@@ -80,6 +94,10 @@ export class NovelRuntimeClient {
   ) {
     this.baseUrl = this.config.get<string>('NOVEL_RUNTIME_BASE_URL') ?? 'http://127.0.0.1:18080';
     this.sharedSecret = this.config.get<string>('NOVEL_RUNTIME_SHARED_SECRET') ?? '';
+    // Sync LLM endpoints (enrich / summarize / consistency) can take tens of seconds;
+    // job / parse / hard-fact calls stay fast. Both are tunable via config.
+    this.defaultTimeoutMs = this.config.get<number>('NOVEL_RUNTIME_TIMEOUT_MS') ?? 15_000;
+    this.llmTimeoutMs = this.config.get<number>('NOVEL_RUNTIME_LLM_TIMEOUT_MS') ?? 120_000;
   }
 
   async createJob(
@@ -143,7 +161,22 @@ export class NovelRuntimeClient {
 
   async reviewConsistency(input: ConsistencyReviewRequest): Promise<ConsistencyReviewResult> {
     const body = ConsistencyReviewRequestSchema.parse(input);
-    return this.request('post', '/v1/reviews/consistency', body, ConsistencyReviewResultSchema);
+    return this.request('post', '/v1/reviews/consistency', body, ConsistencyReviewResultSchema, undefined, this.llmTimeoutMs);
+  }
+
+  async enrichChapter(input: ChapterEnrichRequest): Promise<ChapterEnrichResult> {
+    const body = ChapterEnrichRequestSchema.parse(input);
+    return this.request('post', '/v1/chapters/enrich', body, ChapterEnrichResultSchema, undefined, this.llmTimeoutMs);
+  }
+
+  async parseBlueprint(input: BlueprintParseRequest): Promise<BlueprintParseResult> {
+    const body = BlueprintParseRequestSchema.parse(input);
+    return this.request('post', '/v1/chapters/parse-blueprint', body, BlueprintParseResultSchema);
+  }
+
+  async summarizeRecentChapters(input: ChapterSummarizeRequest): Promise<ChapterSummarizeResult> {
+    const body = ChapterSummarizeRequestSchema.parse(input);
+    return this.request('post', '/v1/chapters/summarize-recent', body, ChapterSummarizeResultSchema, undefined, this.llmTimeoutMs);
   }
 
   async createChapterDraftJob(
@@ -173,6 +206,7 @@ export class NovelRuntimeClient {
     data: unknown,
     schema: z.ZodType<T>,
     params?: Record<string, string>,
+    timeoutMs: number = this.defaultTimeoutMs,
   ): Promise<T> {
     if (!this.sharedSecret) {
       throw new Error('NOVEL_RUNTIME_SHARED_SECRET is not configured');
@@ -184,7 +218,7 @@ export class NovelRuntimeClient {
         url: `${this.baseUrl}${path}`,
         data,
         params,
-        timeout: 15_000,
+        timeout: timeoutMs,
         headers: { 'x-runtime-secret': this.sharedSecret },
       });
       return schema.parse(response.data);

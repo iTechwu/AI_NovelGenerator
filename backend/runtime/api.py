@@ -41,7 +41,9 @@ def utc_now() -> datetime:
 class ProjectInput(BaseModel):
     id: UUID
     title: str = Field(min_length=1, max_length=120)
-    format: Literal['novel'] = 'novel'
+    # Standalone screenplay projects never require a source-novel snapshot.
+    # Adaptation ownership and traceability stay in the NestJS adaptation API.
+    format: Literal['novel', 'screenplay'] = 'novel'
     genre: str = Field(min_length=1, max_length=80)
     premise: str = Field(min_length=20, max_length=4000)
     chapterCount: int = Field(ge=1, le=500)
@@ -157,6 +159,45 @@ class ConsistencyReviewRequest(BaseModel):
 
 class ConsistencyReviewResult(BaseModel):
     report: str
+
+
+class ChapterEnrichRequest(BaseModel):
+    chapterText: str = Field(min_length=1, max_length=200_000)
+    targetWords: int = Field(ge=100, le=20_000)
+
+
+class ChapterEnrichResult(BaseModel):
+    content: str
+
+
+class BlueprintParseRequest(BaseModel):
+    blueprintText: str = Field(min_length=1, max_length=200_000)
+
+
+class ParsedChapter(BaseModel):
+    chapterNumber: int
+    chapterTitle: str = ''
+    chapterRole: str = ''
+    chapterPurpose: str = ''
+    suspenseLevel: str = ''
+    foreshadowing: str = ''
+    plotTwistLevel: str = ''
+    chapterSummary: str = ''
+
+
+class BlueprintParseResult(BaseModel):
+    chapters: list[ParsedChapter]
+
+
+class ChapterSummarizeRequest(BaseModel):
+    chaptersText: list[str] = Field(default_factory=list, max_length=50)
+    chapterNumber: int = Field(ge=1)
+    chapterInfo: dict[str, Any] = Field(default_factory=dict)
+    nextChapterInfo: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChapterSummarizeResult(BaseModel):
+    summary: str
 
 
 # Load backend/.env so the runtime picks up LLM_* / NOVEL_RUNTIME_* whether it is
@@ -321,12 +362,10 @@ async def create_generation_job(
             'interfaceFormat': engine._settings.interface_format,
             'temperature': str(engine._settings.temperature),
             'maxTokens': str(engine._settings.max_tokens),
-            'models': {
-                'architecture': engine._settings.model_architecture,
-                'outline': engine._settings.model_outline,
-                'chapterDraft': engine._settings.model_chapter_draft,
-                'consistencyReview': engine._settings.model_consistency_review,
-            },
+            'architectureModel': engine._settings.model_architecture or engine._settings.model,
+            'outlineModel': engine._settings.model_outline or engine._settings.model,
+            'chapterDraftModel': engine._settings.model_chapter_draft or engine._settings.model,
+            'consistencyReviewModel': engine._settings.model_consistency_review or engine._settings.model,
         },
         status='queued',
         progress=0,
@@ -414,6 +453,56 @@ async def review_consistency(
         request.plotArcs,
     )
     return ConsistencyReviewResult(report=report)
+
+
+@app.post('/v1/chapters/enrich', response_model=ChapterEnrichResult)
+async def enrich_chapter(
+    request: ChapterEnrichRequest,
+    _: None = Depends(require_internal_access),
+) -> ChapterEnrichResult:
+    content = await asyncio.to_thread(
+        engine.enrich_chapter,
+        request.chapterText,
+        request.targetWords,
+    )
+    return ChapterEnrichResult(content=content)
+
+
+@app.post('/v1/chapters/parse-blueprint', response_model=BlueprintParseResult)
+async def parse_blueprint(
+    request: BlueprintParseRequest,
+    _: None = Depends(require_internal_access),
+) -> BlueprintParseResult:
+    chapters_raw = await asyncio.to_thread(engine.parse_blueprint, request.blueprintText)
+    chapters = [
+        ParsedChapter(
+            chapterNumber=c.get('chapter_number', 0),
+            chapterTitle=c.get('chapter_title', ''),
+            chapterRole=c.get('chapter_role', ''),
+            chapterPurpose=c.get('chapter_purpose', ''),
+            suspenseLevel=c.get('suspense_level', ''),
+            foreshadowing=c.get('foreshadowing', ''),
+            plotTwistLevel=c.get('plot_twist_level', ''),
+            chapterSummary=c.get('chapter_summary', ''),
+        )
+        for c in chapters_raw
+    ]
+    return BlueprintParseResult(chapters=chapters)
+
+
+@app.post('/v1/chapters/summarize-recent', response_model=ChapterSummarizeResult)
+async def summarize_recent_chapters(
+    request: ChapterSummarizeRequest,
+    _: None = Depends(require_internal_access),
+) -> ChapterSummarizeResult:
+    summary = await asyncio.to_thread(
+        engine.summarize_recent_chapters,
+        request.chaptersText,
+        request.chapterNumber,
+        request.chapterInfo,
+        request.nextChapterInfo,
+    )
+    return ChapterSummarizeResult(summary=summary)
 
 
 @app.post('/v1/generation-jobs/{job_id}/retry', response_model=GenerationJob, status_code=status.HTTP_202_ACCEPTED)

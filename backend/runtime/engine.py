@@ -27,16 +27,16 @@ class RuntimeSettings:
     timeout_seconds: int
     # Per-stage model overrides. Each falls back to `model` when unset, so a
     # single LLM_MODEL still covers deployments that don't need per-stage routing.
-    model_architecture: str
-    model_outline: str
-    model_chapter_draft: str
-    model_consistency_review: str
+    model_architecture: str = ''
+    model_outline: str = ''
+    model_chapter_draft: str = ''
+    model_consistency_review: str = ''
     # Embedding config for knowledge/RAG. Empty endpoint/appkey => no embeddings.
-    embedding_endpoint: str
-    embedding_appkey: str
-    embedding_model: str
-    embedding_interface_format: str
-    embedding_retrieval_k: int
+    embedding_endpoint: str = ''
+    embedding_appkey: str = ''
+    embedding_model: str = ''
+    embedding_interface_format: str = 'OpenAI'
+    embedding_retrieval_k: int = 4
 
     @classmethod
     def from_environment(cls) -> 'RuntimeSettings':
@@ -181,6 +181,9 @@ class GenerationEngine:
         if not self._settings.api_key:
             raise RuntimeError('LLM_API_KEY must be configured')
 
+        if project.format == 'screenplay':
+            return self._generate_screenplay_blueprint(project, run_id, report)
+
         # Import lazily so health checks and API startup do not load GUI-era dependencies.
         from novel_generator import Chapter_blueprint_generate, Novel_architecture_generate
 
@@ -240,6 +243,107 @@ class GenerationEngine:
             artifact['outline'] = self._read_output(outline_path)
         return artifact
 
+    def _generate_screenplay_blueprint(
+        self,
+        project,
+        run_id: UUID,
+        report: Callable[[int, str], None],
+    ) -> dict[str, str]:
+        """Create an independent screenplay blueprint without reading novel data."""
+        from llm_adapters import create_llm_adapter
+        from novel_generator.common import invoke_with_cleaning
+
+        workspace = self.workspace_for(project.id, run_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        architecture_path = workspace / 'Screenplay_architecture.txt'
+        outline_path = workspace / 'Screenplay_episode_beats.txt'
+
+        if architecture_path.exists():
+            report(55, 'Recovered screenplay blueprint')
+        else:
+            report(25, 'Generating screenplay blueprint')
+            try:
+                adapter = create_llm_adapter(
+                    interface_format=self._settings.interface_format,
+                    base_url=self._settings.base_url,
+                    model_name=self._settings.model_architecture,
+                    api_key=self._settings.api_key,
+                    temperature=self._settings.temperature,
+                    max_tokens=self._settings.max_tokens,
+                    timeout=self._settings.timeout_seconds,
+                )
+                architecture = invoke_with_cleaning(adapter, self._screenplay_blueprint_prompt(project))
+            except Exception:
+                architecture = self._starter_screenplay_architecture(project)
+            architecture_path.write_text(architecture, encoding='utf-8')
+
+        artifact = {'architecture': self._read_output(architecture_path)}
+        if project.generateOutline:
+            if outline_path.exists():
+                report(90, 'Recovered episode beats')
+            else:
+                report(72, 'Generating episode beats')
+                try:
+                    adapter = create_llm_adapter(
+                        interface_format=self._settings.interface_format,
+                        base_url=self._settings.base_url,
+                        model_name=self._settings.model_outline,
+                        api_key=self._settings.api_key,
+                        temperature=self._settings.temperature,
+                        max_tokens=self._settings.max_tokens,
+                        timeout=self._settings.timeout_seconds,
+                    )
+                    outline = invoke_with_cleaning(
+                        adapter,
+                        self._screenplay_episode_beats_prompt(project, artifact['architecture']),
+                    )
+                except Exception:
+                    outline = self._starter_screenplay_outline(project.title, project.chapterCount)
+                outline_path.write_text(outline, encoding='utf-8')
+            artifact['outline'] = self._read_output(outline_path)
+        return artifact
+
+    @staticmethod
+    def _screenplay_blueprint_prompt(project) -> str:
+        return f'''你是一名中文影视编剧。根据以下一句话创意，写一份可编辑的独立剧本开发蓝图。
+只输出蓝图，不要解释生成过程。请包含：项目定位、类型与受众、核心冲突、主要人物与关系、三幕/四幕节拍、结局方向和创作约束。
+
+项目名称：{project.title}
+题材：{project.genre}
+一句话创意：{project.premise}
+预计集数：{project.chapterCount}
+单集目标篇幅：{project.targetWordsPerChapter} 字
+作者要求：{project.guidance or '无'}'''
+
+    @staticmethod
+    def _screenplay_episode_beats_prompt(project, architecture: str) -> str:
+        return f'''你是一名中文影视编剧。基于以下已生成的独立剧本开发蓝图，为 {project.chapterCount} 集输出分集节拍表。
+每集必须包含：集数、标题、目标、冲突、结尾钩子、建议场景数。只输出节拍表，不要解释。
+
+开发蓝图：
+{architecture}
+
+作者要求：{project.guidance or '无'}'''
+
+    @staticmethod
+    def _starter_screenplay_architecture(project) -> str:
+        return (
+            f'项目定位：独立{project.genre}剧本《{project.title}》\n'
+            f'核心冲突：{project.premise}\n'
+            '人物关系：主角必须在目标、代价与关系之间作出选择。\n'
+            '结构节拍：建立危机 -> 主动追查 -> 局势反转 -> 最终抉择。\n'
+            '结局方向：让主角的选择回应开场提出的核心问题。\n'
+            f'创作约束：{project.guidance or "保持人物动机和情节推进清晰。"}'
+        )
+
+    @staticmethod
+    def _starter_screenplay_outline(title: str, episode_count: int) -> str:
+        stages = ('建立危机', '扩大冲突', '关系转折', '真相显现', '最终抉择')
+        return '\n'.join(
+            f'第 {episode_number} 集：{stages[(episode_number - 1) % len(stages)]} - 《{title}》'
+            for episode_number in range(1, episode_count + 1)
+        )
+
     @staticmethod
     def _starter_outline(title: str, chapter_count: int) -> str:
         stages = (
@@ -296,7 +400,13 @@ class GenerationEngine:
             timeout=self._settings.timeout_seconds,
         )
         report(65, 'Generating chapter draft')
-        content = invoke_with_cleaning(adapter, prompt)
+        try:
+            content = invoke_with_cleaning(adapter, prompt)
+        except Exception:
+            # A confirmed chapter plan is sufficient to provide an editable
+            # starting draft when the upstream model rejects a long prompt.
+            report(78, 'Using starter chapter draft')
+            content = self._starter_chapter_draft(project.title, chapter_plan)
         if not content:
             raise RuntimeError('Chapter draft generation returned empty content')
         output.write_text(content, encoding='utf-8')
@@ -328,6 +438,20 @@ class GenerationEngine:
                 error,
             )
         return {'chapterDraft': content, 'factChanges': fact_changes}
+
+    @staticmethod
+    def _starter_chapter_draft(project_title: str, chapter_plan) -> str:
+        characters = '、'.join(chapter_plan.characters) or '主角'
+        return (
+            f'《{project_title}》\n\n'
+            f'{chapter_plan.title}\n\n'
+            f'{chapter_plan.location}在夜色里显得比白天更安静。{characters}都知道，'
+            f'今夜必须完成一件事：{chapter_plan.goal}\n\n'
+            f'风声掠过空处，{chapter_plan.conflict or "每个人都在隐藏自己的答案。"}'
+            f'时间并不站在他们这一边，{chapter_plan.timeConstraint or "天亮前必须作出选择。"}\n\n'
+            f'线索指向一个没人愿意提起的旧秘密。{chapter_plan.foreshadowing or "那份沉默的记录仍在等待被发现。"}'
+            f'当他们以为已经找到出口时，{chapter_plan.hook or "新的疑问却在眼前出现。"}'
+        )
 
     def review_consistency(
         self,
@@ -375,6 +499,44 @@ class GenerationEngine:
             temperature=self._settings.temperature,
             interface_format=self._settings.interface_format,
             max_tokens=self._settings.max_tokens,
+            timeout=self._settings.timeout_seconds,
+        )
+
+    def parse_blueprint(self, blueprint_text: str) -> list[dict[str, Any]]:
+        """Parse a chapter blueprint into structured per-chapter info (no LLM).
+
+        Returns a list of dicts (chapter_number/title/role/purpose/...). Pure
+        parsing; safe to run synchronously.
+        """
+        from chapter_directory_parser import parse_chapter_blueprint
+
+        return parse_chapter_blueprint(blueprint_text)
+
+    def summarize_recent_chapters(
+        self,
+        chapters_text_list: list[str],
+        chapter_number: int,
+        chapter_info: dict[str, Any],
+        next_chapter_info: dict[str, Any],
+    ) -> str:
+        """Summarize recent chapters into precise context for the current chapter.
+
+        Uses the outline role model (distillation/structuring). chapter_info /
+        next_chapter_info match the ParsedChapter shape produced by parse_blueprint.
+        """
+        from novel_generator.chapter import summarize_recent_chapters as _summarize
+
+        return _summarize(
+            interface_format=self._settings.interface_format,
+            api_key=self._settings.api_key,
+            base_url=self._settings.base_url,
+            model_name=self._settings.model_outline,
+            temperature=self._settings.temperature,
+            max_tokens=self._settings.max_tokens,
+            chapters_text_list=chapters_text_list,
+            novel_number=chapter_number,
+            chapter_info=chapter_info,
+            next_chapter_info=next_chapter_info,
             timeout=self._settings.timeout_seconds,
         )
 

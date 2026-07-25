@@ -24,6 +24,8 @@ import {
   StudioScenePlanModule,
   StudioSourceSceneMappingModule,
   StudioScreenplaySceneRevisionModule,
+  StudioStandaloneScreenplaySceneModule,
+  StudioStandaloneScreenplayRevisionModule,
 } from '@app/db';
 import { NovelRuntimeClientModule } from '../../clients/novel-runtime/novel-runtime-client.module';
 import { AuditLogModule } from '@app/audit-log';
@@ -46,6 +48,8 @@ import { StudioService } from './studio.service';
     StudioScenePlanModule,
     StudioSourceSceneMappingModule,
     StudioScreenplaySceneRevisionModule,
+    StudioStandaloneScreenplaySceneModule,
+    StudioStandaloneScreenplayRevisionModule,
     StudioGenerationRunModule,
     StudioBlueprintModule,
     StudioChapterPlanModule,

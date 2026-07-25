@@ -14,6 +14,8 @@ export * from './modules/studio-adaptation-source-chapter';
 export * from './modules/studio-adaptation-decision';
 export * from './modules/studio-scene-plan';
 export * from './modules/studio-screenplay-scene-revision';
+export * from './modules/studio-standalone-screenplay-scene';
+export * from './modules/studio-standalone-screenplay-revision';
 export * from './modules/studio-source-scene-mapping';
 export * from './modules/studio-generation-run';
 export * from './modules/studio-blueprint';

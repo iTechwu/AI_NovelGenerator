@@ -66,6 +66,88 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.listStandaloneScreenplayScenes)
+  async listStandaloneScreenplayScenes(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listStandaloneScreenplayScenes, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listStandaloneScreenplayScenes(
+          request.userId,
+          params.projectId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.saveStandaloneScreenplayScene)
+  async saveStandaloneScreenplayScene(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.saveStandaloneScreenplayScene, async ({ params, body }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.saveStandaloneScreenplayScene(
+          request.userId,
+          params.projectId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listStandaloneScreenplayRevisions)
+  async listStandaloneScreenplayRevisions(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listStandaloneScreenplayRevisions, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listStandaloneScreenplayRevisions(
+          request.userId,
+          params.projectId,
+          params.sceneId,
+          query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.createStandaloneScreenplayRevision)
+  async createStandaloneScreenplayRevision(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createStandaloneScreenplayRevision, async ({ params, body }) => ({
+      status: 201 as const,
+      body: {
+        code: 201,
+        msg: 'created',
+        data: await this.studioService.createStandaloneScreenplayRevision(
+          request.userId,
+          params.projectId,
+          params.sceneId,
+          body,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.exportStandaloneScreenplay)
+  async exportStandaloneScreenplay(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.exportStandaloneScreenplay, async ({ params, query }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.exportStandaloneScreenplay(
+          request.userId,
+          params.projectId,
+          query,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.listAdaptations)
   async listAdaptations(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.listAdaptations, async ({ params, query }) => ({
@@ -223,6 +305,30 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.startReviewReady)
+  async startReviewReady(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.startReviewReady, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.startReviewReady(request.userId, params.adaptationId),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.startDeliverable)
+  async startDeliverable(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.startDeliverable, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.startDeliverable(request.userId, params.adaptationId),
+      },
+    }));
+  }
+
   @TsRestHandler(c.saveScenePlan)
   async saveScenePlan(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.saveScenePlan, async ({ params, body }) => ({
@@ -348,6 +454,36 @@ export class StudioController {
           request.userId,
           params.adaptationId,
           query,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.listAdaptationSourceDrift)
+  async listAdaptationSourceDrift(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.listAdaptationSourceDrift, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.listAdaptationSourceDrift(
+          request.userId,
+          params.adaptationId,
+        ),
+      },
+    }));
+  }
+
+  @TsRestHandler(c.markSourceSceneMappingsStale)
+  async markSourceSceneMappingsStale(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.markSourceSceneMappingsStale, async ({ params }) => ({
+      status: 200 as const,
+      body: {
+        code: 200,
+        msg: 'ok',
+        data: await this.studioService.markSourceSceneMappingsStale(
+          request.userId,
+          params.adaptationId,
         ),
       },
     }));

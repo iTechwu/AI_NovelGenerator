@@ -14,12 +14,19 @@ const {
   listAdaptationSourceChapters,
   startScenePlanning,
   startScriptWriting,
+  startReviewReady,
+  startDeliverable,
   listScenePlans,
   saveScenePlan,
   confirmScenePlan,
   listSourceSceneMappings,
   createSourceSceneMapping,
   resolveSourceSceneMapping,
+  listScreenplaySceneRevisions,
+  createScreenplaySceneRevision,
+  exportAdaptation,
+  listAdaptationSourceDrift,
+  markSourceSceneMappingsStale,
   createAuthorChapterRevision,
   createChapterDraft,
   createFactChange,
@@ -60,12 +67,19 @@ const {
   listAdaptationSourceChapters: vi.fn(),
   startScenePlanning: vi.fn(),
   startScriptWriting: vi.fn(),
+  startReviewReady: vi.fn(),
+  startDeliverable: vi.fn(),
   listScenePlans: vi.fn(),
   saveScenePlan: vi.fn(),
   confirmScenePlan: vi.fn(),
   listSourceSceneMappings: vi.fn(),
   createSourceSceneMapping: vi.fn(),
   resolveSourceSceneMapping: vi.fn(),
+  listScreenplaySceneRevisions: vi.fn(),
+  createScreenplaySceneRevision: vi.fn(),
+  exportAdaptation: vi.fn(),
+  listAdaptationSourceDrift: vi.fn(),
+  markSourceSceneMappingsStale: vi.fn(),
   createAuthorChapterRevision: vi.fn(),
   createChapterDraft: vi.fn(),
   createFactChange: vi.fn(),
@@ -111,12 +125,19 @@ vi.mock('@/lib/api/contracts/client', () => ({
     resolveAdaptationDecision,
     startScenePlanning,
     startScriptWriting,
+    startReviewReady,
+    startDeliverable,
     listScenePlans,
     saveScenePlan,
     confirmScenePlan,
     listSourceSceneMappings,
     createSourceSceneMapping,
     resolveSourceSceneMapping,
+    listScreenplaySceneRevisions,
+    createScreenplaySceneRevision,
+    exportAdaptation,
+    listAdaptationSourceDrift,
+    markSourceSceneMappingsStale,
     getBlueprint,
     getProjectOverview,
     getJob,
@@ -190,12 +211,19 @@ describe('StudioWorkbench', () => {
     resolveAdaptationDecision.mockReset();
     startScenePlanning.mockReset();
     startScriptWriting.mockReset();
+    startReviewReady.mockReset();
+    startDeliverable.mockReset();
     listScenePlans.mockReset();
     saveScenePlan.mockReset();
     confirmScenePlan.mockReset();
     listSourceSceneMappings.mockReset();
     createSourceSceneMapping.mockReset();
     resolveSourceSceneMapping.mockReset();
+    listScreenplaySceneRevisions.mockReset();
+    createScreenplaySceneRevision.mockReset();
+    exportAdaptation.mockReset();
+    listAdaptationSourceDrift.mockReset();
+    markSourceSceneMappingsStale.mockReset();
     createAuthorChapterRevision.mockReset();
     finalizeChapterRevision.mockReset();
     getBlueprint.mockReset();
@@ -260,6 +288,8 @@ describe('StudioWorkbench', () => {
     resolveAdaptationDecision.mockResolvedValue({ status: 500 });
     startScenePlanning.mockResolvedValue({ status: 500 });
     startScriptWriting.mockResolvedValue({ status: 500 });
+    startReviewReady.mockResolvedValue({ status: 500 });
+    startDeliverable.mockResolvedValue({ status: 500 });
     listScenePlans.mockResolvedValue({
       status: 200,
       body: { data: { list: [], total: 0, page: 1, limit: 100 } },
@@ -272,6 +302,23 @@ describe('StudioWorkbench', () => {
     });
     createSourceSceneMapping.mockResolvedValue({ status: 500 });
     resolveSourceSceneMapping.mockResolvedValue({ status: 500 });
+    listScreenplaySceneRevisions.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [], total: 0, page: 1, limit: 200 } },
+    });
+    createScreenplaySceneRevision.mockResolvedValue({ status: 500 });
+    exportAdaptation.mockResolvedValue({ status: 500 });
+    listAdaptationSourceDrift.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          snapshotChapterCount: 2,
+          snapshotCreatedAt: '2026-07-24T02:00:00.000Z',
+          newChapters: [],
+        },
+      },
+    });
+    markSourceSceneMappingsStale.mockResolvedValue({ status: 500 });
     getChapterPlan.mockResolvedValue({ status: 404 });
     listChapterRevisions.mockResolvedValue({
       status: 200,
@@ -354,10 +401,12 @@ describe('StudioWorkbench', () => {
     });
   });
 
-  it('asks for a project name before revealing the detailed story form', async () => {
+  it('shows distinct one-sentence novel and screenplay entries before the detailed form', async () => {
     render(<StudioWorkbench />);
 
-    expect(screen.getByRole('heading', { name: '从一个项目开始' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '选择你要创作的文体' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '一句话写小说' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '一句话写剧本' })).toBeInTheDocument();
     expect(screen.queryByLabelText('故事梗概')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '建立项目' }));
@@ -368,6 +417,50 @@ describe('StudioWorkbench', () => {
 
     expect(await screen.findByLabelText('故事梗概')).toBeInTheDocument();
     expect(screen.getByText('当前项目')).toBeInTheDocument();
+  });
+
+  it('starts a standalone screenplay from its own one-sentence entry', async () => {
+    createProject.mockResolvedValue({
+      status: 202,
+      body: {
+        data: {
+          id: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
+          project: {
+            id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+            title: '未命名剧本',
+            format: 'screenplay',
+            genre: '悬疑',
+            chapterCount: 12,
+            targetWordsPerChapter: 1500,
+          },
+          status: 'queued',
+          progress: 0,
+          currentStep: 'Queued for generation',
+          createdAt: '2026-07-24T02:00:00.000Z',
+          updatedAt: '2026-07-24T02:00:00.000Z',
+        },
+      },
+    });
+    render(<StudioWorkbench />);
+    const premise = '婚礼当天，新娘收到匿名录像，必须在仪式结束前找出录像里失踪的新郎。';
+
+    fireEvent.change(screen.getByLabelText('剧本一句话设定'), { target: { value: premise } });
+    fireEvent.click(screen.getByRole('button', { name: '开始写剧本' }));
+
+    expect(await screen.findByLabelText('剧本梗概')).toBeInTheDocument();
+    expect(screen.getByText('预计集数')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '生成剧本蓝图' }));
+
+    await waitFor(() => {
+      expect(createProject).toHaveBeenCalledWith({
+        body: expect.objectContaining({
+          format: 'screenplay',
+          premise,
+          chapterCount: 12,
+          targetWordsPerChapter: 1500,
+        }),
+      });
+    });
   });
 
   it('refreshes the project library when creation dispatch fails after persistence', async () => {
@@ -1135,6 +1228,62 @@ describe('StudioWorkbench', () => {
     expect(await screen.findByText('已确认')).toBeInTheDocument();
   });
 
+  it('surfaces source drift and marks traceability mappings stale on demand', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const scenePlanningAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'scene_planning' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [scenePlanningAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    listAdaptationSourceDrift.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          snapshotChapterCount: 2,
+          snapshotCreatedAt: '2026-07-24T02:00:00.000Z',
+          newChapters: [{ chapterNumber: 3, title: '失踪的证人' }],
+        },
+      },
+    });
+    markSourceSceneMappingsStale.mockResolvedValue({
+      status: 200,
+      body: { data: { markedStaleCount: 2 } },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('来源新增 1 章');
+    fireEvent.click(screen.getByRole('button', { name: '标记溯源待复核' }));
+
+    await waitFor(() => {
+      expect(markSourceSceneMappingsStale).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {},
+      });
+    });
+  });
+
   it('advances from scene planning into script writing', async () => {
     const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
     const scenePlanningAdaptation = {
@@ -1178,6 +1327,300 @@ describe('StudioWorkbench', () => {
         body: {},
       });
     });
+  });
+
+  it('saves an immutable screenplay scene revision during script writing', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const scriptWritingAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'script_writing' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [scriptWritingAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    const content = 'INT. 码头 - 夜\n\n女主撑伞走近。';
+    createScreenplaySceneRevision.mockResolvedValue({
+      status: 201,
+      body: {
+        data: {
+          id: '7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e',
+          adaptationId,
+          scenePlanId: 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e',
+          episodeNumber: 1,
+          sceneNumber: 1,
+          source: 'author',
+          sourceRevisionId: null,
+          version: 1,
+          content,
+          contentHash: 'a'.repeat(64),
+          wordCount: 4,
+          editSummary: '初稿',
+          createdAt: '2026-07-26T02:00:00.000Z',
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('场景剧本');
+
+    fireEvent.change(screen.getByLabelText('剧本正文（Fountain）'), { target: { value: content } });
+    fireEvent.click(screen.getByRole('button', { name: '保存场景剧本' }));
+
+    await waitFor(() => {
+      expect(createScreenplaySceneRevision).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {
+          episodeNumber: 1,
+          sceneNumber: 1,
+          content,
+          editSummary: undefined,
+        },
+      });
+    });
+  });
+
+  it('advances from script writing to comparative review', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const scriptWritingAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'script_writing' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [scriptWritingAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    startReviewReady.mockResolvedValue({
+      status: 200,
+      body: { data: { ...scriptWritingAdaptation, status: 'review_ready' } },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('场景剧本');
+    fireEvent.click(screen.getByRole('button', { name: '提交对照审阅' }));
+
+    await waitFor(() => {
+      expect(startReviewReady).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: {},
+      });
+    });
+  });
+
+  it('aligns source chapters with screenplay scenes in comparative review', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const sourceChapterId = 'c2fe573d-e9e0-423e-9319-4f6fc375e75d';
+    const reviewReadyAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'review_ready' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 1,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [reviewReadyAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    listAdaptationSourceChapters.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: sourceChapterId,
+              snapshotId: reviewReadyAdaptation.sourceSnapshot.id,
+              sourceRevisionId: '8a1f5e2c-7b3a-4d9e-b6c1-2f4a8d9e0b3a',
+              chapterNumber: 1,
+              title: '迟到的信件',
+              content: '雨声先于信件抵达。',
+              contentHash: 'a'.repeat(64),
+              wordCount: 8,
+              createdAt: '2026-07-24T02:00:00.000Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 100,
+        },
+      },
+    });
+    listSourceSceneMappings.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: '5e4d3c2b-1a0f-9e8d-7c6b-5a4f3e2d1c0b',
+              adaptationId,
+              scenePlanId: 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e',
+              episodeNumber: 1,
+              sceneNumber: 1,
+              sourceChapter: { id: sourceChapterId, chapterNumber: 1, title: '迟到的信件' },
+              evidenceAnchor: '第 1 章开场段落。',
+              status: 'confirmed' as const,
+              createdAt: '2026-07-25T02:00:00.000Z',
+              updatedAt: '2026-07-25T02:00:00.000Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 100,
+        },
+      },
+    });
+    listScreenplaySceneRevisions.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          list: [
+            {
+              id: '7b8c9d0e-1f2a-3b4c-5d6e-7f8a9b0c1d2e',
+              adaptationId,
+              scenePlanId: 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e',
+              episodeNumber: 1,
+              sceneNumber: 1,
+              source: 'author',
+              sourceRevisionId: null,
+              version: 1,
+              content: 'INT. 码头 - 夜\n\n女主撑伞走近。',
+              contentHash: 'a'.repeat(64),
+              wordCount: 4,
+              editSummary: '初稿',
+              createdAt: '2026-07-26T02:00:00.000Z',
+            },
+          ],
+          total: 1,
+          page: 1,
+          limit: 200,
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+
+    await screen.findByText('对照审阅');
+    expect(screen.getByText(/雨声先于信件抵达。/)).toBeInTheDocument();
+    expect(screen.getAllByText(/INT\. 码头 - 夜/).length).toBeGreaterThan(0);
+  });
+
+  it('downloads an exported Fountain screenplay from the script writing stage', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const scriptWritingAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'script_writing' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [scriptWritingAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    exportAdaptation.mockResolvedValue({
+      status: 200,
+      body: {
+        data: {
+          filename: '雾港来信-screenplay.fountain',
+          contentType: 'text/plain',
+          content: 'Title: 雾港来信',
+          sourceSnapshotId: scriptWritingAdaptation.sourceSnapshot.id,
+          episodeCount: 1,
+          warnings: [],
+        },
+      },
+    });
+    const createObjectURL = vi.fn(() => 'blob:mock');
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(globalThis.URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(globalThis.URL, 'revokeObjectURL', {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('场景剧本');
+    fireEvent.click(screen.getByRole('button', { name: '导出剧本' }));
+
+    await waitFor(() => {
+      expect(exportAdaptation).toHaveBeenCalledWith({
+        params: { adaptationId },
+        query: { format: 'fountain' },
+      });
+    });
+    expect(createObjectURL).toHaveBeenCalled();
   });
 
   it('offers recovery for a failed generation after opening the project', async () => {

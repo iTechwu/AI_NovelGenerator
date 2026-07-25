@@ -63,6 +63,55 @@ def test_starter_outline_covers_every_requested_chapter() -> None:
     ]
 
 
+def test_standalone_screenplay_uses_its_own_blueprint_path(monkeypatch, tmp_path: Path) -> None:
+    settings = RuntimeSettings(
+        storage_root=tmp_path,
+        shared_secret='test-runtime-secret',
+        api_key='test-key',
+        base_url='https://example.test/v1',
+        model='test-model',
+        interface_format='OpenAI',
+        temperature=0.7,
+        max_tokens=100,
+        timeout_seconds=10,
+    )
+    engine = GenerationEngine(settings)
+    project = api.ProjectInput(**{
+        **make_request().project.model_dump(),
+        'format': 'screenplay',
+    })
+    calls: list[str] = []
+    monkeypatch.setattr(
+        engine,
+        '_generate_screenplay_blueprint',
+        lambda *_: calls.append('screenplay') or {'architecture': '剧本蓝图', 'outline': '分集节拍'},
+    )
+
+    result = engine.generate(project, UUID(RUN_ID), lambda *_: None)
+
+    assert project.format == 'screenplay'
+    assert calls == ['screenplay']
+    assert result['outline'] == '分集节拍'
+
+
+def test_starter_chapter_draft_uses_the_confirmed_plan() -> None:
+    chapter_plan = api.ChapterPlanInput(
+        id='44cd4216-d6b2-4c4c-9008-18b79194c4d9',
+        chapterNumber=1,
+        title='雾灯亮起的夜晚',
+        goal='确认渡轮上的雾灯来源。',
+        characters=['顾行'],
+        location='停航渡轮',
+        hook='远处出现一座不存在的小岛。',
+    )
+
+    draft = GenerationEngine._starter_chapter_draft('雾灯航线', chapter_plan)
+
+    assert '雾灯亮起的夜晚' in draft
+    assert '确认渡轮上的雾灯来源。' in draft
+    assert '远处出现一座不存在的小岛。' in draft
+
+
 def test_runtime_writes_completion_checkpoint_for_the_nest_run_id(
     monkeypatch,
     tmp_path: Path,
@@ -102,9 +151,13 @@ def test_runtime_writes_completion_checkpoint_for_the_nest_run_id(
         'chapterPlan': None,
         'kind': 'blueprint',
         'modelConfig': {
+            'architectureModel': 'test-model',
+            'chapterDraftModel': 'test-model',
+            'consistencyReviewModel': 'test-model',
             'interfaceFormat': 'OpenAI',
             'maxTokens': '100',
             'model': 'test-model',
+            'outlineModel': 'test-model',
             'provider': 'python-runtime',
             'temperature': '0.7',
         },

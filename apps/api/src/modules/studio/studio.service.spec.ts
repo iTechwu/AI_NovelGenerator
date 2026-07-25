@@ -65,6 +65,7 @@ describe('StudioService', () => {
   const adaptationSourceSnapshotService = {
     create: jest.fn(),
     get: jest.fn(),
+    getById: jest.fn(),
   };
   const adaptationSourceChapterService = {
     createMany: jest.fn(),
@@ -90,8 +91,21 @@ describe('StudioService', () => {
     getById: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   };
   const screenplayRevisionService = {
+    list: jest.fn(),
+    create: jest.fn(),
+    count: jest.fn(),
+  };
+  const standaloneScreenplaySceneService = {
+    list: jest.fn(),
+    get: jest.fn(),
+    getById: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
+  };
+  const standaloneScreenplayRevisionService = {
     list: jest.fn(),
     create: jest.fn(),
   };
@@ -195,6 +209,8 @@ describe('StudioService', () => {
       scenePlanService as never,
       sourceSceneMappingService as never,
       screenplayRevisionService as never,
+      standaloneScreenplaySceneService as never,
+      standaloneScreenplayRevisionService as never,
       runService as never,
       blueprintService as never,
       chapterPlanService as never,
@@ -275,7 +291,7 @@ describe('StudioService', () => {
   it("creates an adaptation only from the author's finalized novel snapshot", async () => {
     const sourceProject = { id: projectId, ownerId, ...projectInput, updatedAt: createdAt };
     const adaptation = {
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetFormat: 'SERIES',
@@ -322,6 +338,7 @@ describe('StudioService', () => {
       title: '迟到的信件',
     });
     adaptationProjectService.create.mockResolvedValue(adaptation);
+    adaptationProjectService.update.mockResolvedValue(adaptation);
     adaptationSourceSnapshotService.create.mockResolvedValue(snapshot);
 
     const result = await service.createAdaptation(ownerId, projectId, {
@@ -363,7 +380,7 @@ describe('StudioService', () => {
 
   it('saves a draft adaptation brief without changing its immutable source snapshot', async () => {
     const adaptation = {
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetFormat: 'SERIES',
@@ -396,7 +413,7 @@ describe('StudioService', () => {
     };
     adaptationProjectService.getById.mockResolvedValue(adaptation);
     adaptationProjectService.update.mockResolvedValue(updated);
-    adaptationSourceSnapshotService.get.mockResolvedValue(snapshot);
+    adaptationSourceSnapshotService.getById.mockResolvedValue(snapshot);
 
     const result = await service.updateAdaptationBrief(ownerId, adaptationId, {
       targetFormat: 'short_drama',
@@ -411,7 +428,7 @@ describe('StudioService', () => {
       { id: adaptationId },
       expect.objectContaining({ targetFormat: 'SHORT_DRAMA', episodeCount: 60 }),
     );
-    expect(adaptationSourceSnapshotService.get).toHaveBeenCalledWith({ adaptationId });
+    expect(adaptationSourceSnapshotService.getById).toHaveBeenCalledWith(snapshotId);
     expect(result).toMatchObject({
       targetFormat: 'short_drama',
       status: 'brief_draft',
@@ -421,7 +438,7 @@ describe('StudioService', () => {
 
   it('confirms only a complete adaptation brief before blueprint review', async () => {
     const incomplete = {
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetAudience: '',
@@ -455,7 +472,7 @@ describe('StudioService', () => {
     };
     adaptationProjectService.getById.mockResolvedValueOnce(complete);
     adaptationProjectService.update.mockResolvedValue({ ...complete, status: 'BLUEPRINT_REVIEW' });
-    adaptationSourceSnapshotService.get.mockResolvedValue(snapshot);
+    adaptationSourceSnapshotService.getById.mockResolvedValue(snapshot);
 
     const result = await service.confirmAdaptationBrief(ownerId, adaptationId);
 
@@ -468,7 +485,7 @@ describe('StudioService', () => {
 
   it('records a source-anchored decision only during adaptation blueprint review', async () => {
     const adaptation = {
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       status: 'BLUEPRINT_REVIEW',
@@ -496,7 +513,7 @@ describe('StudioService', () => {
       updatedAt: createdAt,
     };
     adaptationProjectService.getById.mockResolvedValue(adaptation);
-    adaptationSourceSnapshotService.get.mockResolvedValue(snapshot);
+    adaptationSourceSnapshotService.getById.mockResolvedValue(snapshot);
     adaptationSourceChapterService.getById.mockResolvedValue(sourceChapter);
     adaptationDecisionService.create.mockResolvedValue(decision);
 
@@ -526,11 +543,11 @@ describe('StudioService', () => {
 
   it('rejects a decision anchor outside the immutable adaptation snapshot', async () => {
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       status: 'BLUEPRINT_REVIEW',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationSourceSnapshotService.getById.mockResolvedValue({ id: snapshotId, adaptationId });
     adaptationSourceChapterService.getById.mockResolvedValue({
       id: sourceChapterId,
       snapshotId: 'dcfc2f2a-e318-4bca-b0e3-9898b111197d',
@@ -571,7 +588,7 @@ describe('StudioService', () => {
       updatedAt: createdAt,
     };
     const resolvedAt = new Date('2026-07-25T08:00:00.000Z');
-    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, ownerId });
+    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, currentSnapshotId: snapshotId, ownerId });
     adaptationDecisionService.getById.mockResolvedValue(proposed);
     adaptationSourceChapterService.getById.mockResolvedValue(sourceChapter);
     adaptationDecisionService.update.mockResolvedValue({
@@ -623,8 +640,8 @@ describe('StudioService', () => {
         createdAt,
       },
     ];
-    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, ownerId });
-    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, currentSnapshotId: snapshotId, ownerId });
+    adaptationSourceSnapshotService.getById.mockResolvedValue({ id: snapshotId, adaptationId });
     adaptationSourceChapterService.list.mockResolvedValue({
       list: chapters,
       total: 2,
@@ -649,7 +666,7 @@ describe('StudioService', () => {
 
   it('blocks scene planning while a high-impact decision is unresolved', async () => {
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       status: 'BLUEPRINT_REVIEW',
     });
@@ -666,12 +683,12 @@ describe('StudioService', () => {
 
   it('advances to scene planning once every high-impact decision is resolved', async () => {
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       status: 'BLUEPRINT_REVIEW',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({
+    adaptationSourceSnapshotService.getById.mockResolvedValue({
       id: snapshotId,
       adaptationId,
       sourceProjectId: projectId,
@@ -682,7 +699,7 @@ describe('StudioService', () => {
     });
     adaptationDecisionService.count.mockResolvedValue(0);
     adaptationProjectService.update.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetFormat: 'SERIES',
@@ -717,11 +734,11 @@ describe('StudioService', () => {
       },
     ];
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       status: 'SCENE_PLANNING',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationSourceSnapshotService.getById.mockResolvedValue({ id: snapshotId, adaptationId });
     scenePlanService.get.mockResolvedValue(null);
     scenePlanService.create.mockResolvedValue({
       id: '6a4c2e8d-9b1f-4c3a-8d2e-1b5f6a7c8d9e',
@@ -767,12 +784,12 @@ describe('StudioService', () => {
 
   it('blocks script writing without a confirmed scene plan and advances once one exists', async () => {
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       status: 'SCENE_PLANNING',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({
+    adaptationSourceSnapshotService.getById.mockResolvedValue({
       id: snapshotId,
       adaptationId,
       sourceProjectId: projectId,
@@ -792,7 +809,7 @@ describe('StudioService', () => {
 
     scenePlanService.count.mockResolvedValue(1);
     adaptationProjectService.update.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetFormat: 'SERIES',
@@ -816,6 +833,81 @@ describe('StudioService', () => {
     expect(result.status).toBe('script_writing');
   });
 
+  it('advances to review ready only after a screenplay exists, then to deliverable', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId, currentSnapshotId: snapshotId,
+      ownerId,
+      sourceProjectId: projectId,
+      status: 'SCRIPT_WRITING',
+    });
+    adaptationSourceSnapshotService.getById.mockResolvedValue({
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 2,
+      createdAt,
+    });
+    screenplayRevisionService.count.mockResolvedValue(0);
+
+    await expect(service.startReviewReady(ownerId, adaptationId)).rejects.toMatchObject({});
+    expect(adaptationProjectService.update).not.toHaveBeenCalled();
+
+    screenplayRevisionService.count.mockResolvedValue(1);
+    adaptationProjectService.update.mockResolvedValue({
+      id: adaptationId, currentSnapshotId: snapshotId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      rightsConfirmedAt: createdAt,
+      status: 'REVIEW_READY',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const reviewResult = await service.startReviewReady(ownerId, adaptationId);
+    expect(adaptationProjectService.update).toHaveBeenCalledWith(
+      { id: adaptationId },
+      { status: 'REVIEW_READY' },
+    );
+    expect(reviewResult.status).toBe('review_ready');
+
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId, currentSnapshotId: snapshotId,
+      ownerId,
+      sourceProjectId: projectId,
+      status: 'REVIEW_READY',
+    });
+    adaptationProjectService.update.mockResolvedValue({
+      id: adaptationId, currentSnapshotId: snapshotId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      rightsConfirmedAt: createdAt,
+      status: 'DELIVERABLE',
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const deliverableResult = await service.startDeliverable(ownerId, adaptationId);
+    expect(adaptationProjectService.update).toHaveBeenLastCalledWith(
+      { id: adaptationId },
+      { status: 'DELIVERABLE' },
+    );
+    expect(deliverableResult.status).toBe('deliverable');
+  });
+
   it('anchors a planned scene to a real source chapter and rejects unknown scenes', async () => {
     const sceneOutline = [
       { sceneNumber: 1, title: '码头重逢', synopsis: '女主回到雾港码头。', sourceChapterIds: [] },
@@ -823,11 +915,11 @@ describe('StudioService', () => {
     const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
     const mappingId = '5e4d3c2b-1a0f-9e8d-7c6b-5a4f3e2d1c0b';
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       status: 'SCENE_PLANNING',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({ id: snapshotId, adaptationId });
+    adaptationSourceSnapshotService.getById.mockResolvedValue({ id: snapshotId, adaptationId });
     adaptationSourceChapterService.getById.mockResolvedValue({
       id: sourceChapterId,
       snapshotId,
@@ -887,7 +979,7 @@ describe('StudioService', () => {
 
   it('resolves a source-scene mapping to confirmed or stale with an audit reason', async () => {
     const mappingId = '5e4d3c2b-1a0f-9e8d-7c6b-5a4f3e2d1c0b';
-    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, ownerId });
+    adaptationProjectService.getById.mockResolvedValue({ id: adaptationId, currentSnapshotId: snapshotId, ownerId });
     sourceSceneMappingService.getById.mockResolvedValue({
       id: mappingId,
       adaptationId,
@@ -938,7 +1030,7 @@ describe('StudioService', () => {
     ];
     const content = 'INT. 码头 - 夜\n\n女主撑伞走近，灯光在水面上碎裂。';
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       status: 'SCRIPT_WRITING',
     });
@@ -1003,12 +1095,12 @@ describe('StudioService', () => {
   it('exports confirmed scene plans with their latest screenplay as a fountain', async () => {
     const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetFormat: 'SERIES',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({
+    adaptationSourceSnapshotService.getById.mockResolvedValue({
       id: snapshotId,
       adaptationId,
       sourceProjectId: projectId,
@@ -1058,14 +1150,80 @@ describe('StudioService', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('keeps independent screenplay scenes separate from novel projects and appends Fountain versions', async () => {
+    const sceneId = 'd2d9a23c-742e-4ea2-a83f-2bb5cf4b9a73';
+    const screenplayProject = {
+      id: projectId,
+      ownerId,
+      title: '雾港来信（剧本）',
+      format: 'screenplay',
+      genre: '悬疑',
+      premise: projectInput.premise,
+      chapterCount: 12,
+      targetWordsPerChapter: 1500,
+      guidance: '',
+      generateOutline: true,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    projectService.getById.mockResolvedValue(screenplayProject);
+    standaloneScreenplaySceneService.getById.mockResolvedValue({
+      id: sceneId,
+      projectId,
+      episodeNumber: 1,
+      sceneNumber: 1,
+      title: '码头重逢',
+      synopsis: '林舟收到匿名录像。',
+      status: 'DRAFT',
+      createdAt,
+      updatedAt: createdAt,
+    });
+    standaloneScreenplayRevisionService.list.mockResolvedValue({
+      list: [{ version: 2 }],
+      total: 1,
+      page: 1,
+      limit: 1,
+    });
+    standaloneScreenplayRevisionService.create.mockResolvedValue({
+      id: '928a8319-55e9-481f-99b4-4a0d6d7ee8ac',
+      projectId,
+      sceneId,
+      version: 3,
+      content: 'INT. 码头 - 夜\n\n林舟看向录像机。',
+      contentHash: createHash('sha256').update('INT. 码头 - 夜\n\n林舟看向录像机。').digest('hex'),
+      wordCount: 2,
+      editSummary: '强化开场悬念',
+      createdAt,
+    });
+
+    const revision = await service.createStandaloneScreenplayRevision(ownerId, projectId, sceneId, {
+      content: 'INT. 码头 - 夜\n\n林舟看向录像机。',
+      editSummary: '强化开场悬念',
+    });
+
+    expect(standaloneScreenplayRevisionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project: { connect: { id: projectId } },
+        scene: { connect: { id: sceneId } },
+        version: 3,
+      }),
+    );
+    expect(revision).toMatchObject({ sceneId, version: 3, editSummary: '强化开场悬念' });
+
+    projectService.getById.mockResolvedValue({ ...screenplayProject, format: 'novel' });
+    await expect(
+      service.listStandaloneScreenplayScenes(ownerId, projectId, { page: 1, limit: 20 }),
+    ).rejects.toMatchObject({});
+  });
+
   it('refuses to export a screenplay when no scene plan is confirmed', async () => {
     adaptationProjectService.getById.mockResolvedValue({
-      id: adaptationId,
+      id: adaptationId, currentSnapshotId: snapshotId,
       ownerId,
       sourceProjectId: projectId,
       targetFormat: 'SERIES',
     });
-    adaptationSourceSnapshotService.get.mockResolvedValue({
+    adaptationSourceSnapshotService.getById.mockResolvedValue({
       id: snapshotId,
       adaptationId,
       sourceProjectId: projectId,
@@ -1079,6 +1237,74 @@ describe('StudioService', () => {
     await expect(
       service.exportAdaptation(ownerId, adaptationId, { format: 'txt' }),
     ).rejects.toMatchObject({});
+  });
+
+  it('detects source chapters finalized after the adaptation snapshot', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId, currentSnapshotId: snapshotId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+    });
+    adaptationSourceSnapshotService.getById.mockResolvedValue({
+      id: snapshotId,
+      adaptationId,
+      sourceProjectId: projectId,
+      sourceProjectTitle: '雾港来信',
+      sourceProjectUpdatedAt: createdAt,
+      sourceChapterCount: 2,
+      createdAt,
+    });
+    // Snapshot captured chapters 1 and 2.
+    adaptationSourceChapterService.list.mockResolvedValue({
+      list: [
+        { chapterNumber: 1 },
+        { chapterNumber: 2 },
+      ],
+      total: 2,
+      page: 1,
+      limit: 500,
+    });
+    // Source novel has since finalized chapter 3 as well.
+    chapterFinalPointerService.list.mockResolvedValue({
+      list: [{ chapterNumber: 1 }, { chapterNumber: 2 }, { chapterNumber: 3 }],
+      total: 3,
+      page: 1,
+      limit: 500,
+    });
+    chapterPlanService.list.mockResolvedValue({
+      list: [
+        { chapterNumber: 1, title: '迟到的信件' },
+        { chapterNumber: 2, title: '码头的重逢' },
+        { chapterNumber: 3, title: '失踪的证人' },
+      ],
+      total: 3,
+      page: 1,
+      limit: 500,
+    });
+
+    const drift = await service.listAdaptationSourceDrift(ownerId, adaptationId);
+
+    expect(drift.snapshotChapterCount).toBe(2);
+    expect(drift.newChapters).toEqual([{ chapterNumber: 3, title: '失踪的证人' }]);
+  });
+
+  it('marks all non-stale source-scene mappings for re-review', async () => {
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId, currentSnapshotId: snapshotId,
+      ownerId,
+      sourceProjectId: projectId,
+      targetFormat: 'SERIES',
+    });
+    sourceSceneMappingService.updateMany.mockResolvedValue({ count: 4 });
+
+    const result = await service.markSourceSceneMappingsStale(ownerId, adaptationId);
+
+    expect(sourceSceneMappingService.updateMany).toHaveBeenCalledWith(
+      { adaptationId, status: { not: 'STALE' } },
+      { status: 'STALE' },
+    );
+    expect(result).toEqual({ markedStaleCount: 4 });
   });
 
   it('projects a dispatch failure after persisting the project and queued run', async () => {
