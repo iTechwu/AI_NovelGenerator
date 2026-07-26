@@ -28,6 +28,7 @@ describe('StudioService', () => {
   const runtimeClient = {
     createJob: jest.fn(),
     createChapterDraftJob: jest.fn(),
+    createScreenplaySceneDraftJob: jest.fn(),
     getJob: jest.fn(),
     retryJob: jest.fn(),
     cancelJob: jest.fn(),
@@ -1444,6 +1445,96 @@ describe('StudioService', () => {
       }),
     );
     expect(result).toMatchObject({ verdict: 'faithful', episodeNumber: 1, sceneNumber: 1 });
+  });
+
+  it('dispatches an AI screenplay scene draft with adaptation context', async () => {
+    const scenePlanId = 'ab1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e';
+    adaptationProjectService.getById.mockResolvedValue({
+      id: adaptationId,
+      ownerId,
+      sourceProjectId: projectId,
+      currentSnapshotId: snapshotId,
+      targetFormat: 'SERIES',
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'SCRIPT_WRITING',
+    });
+    scenePlanService.get.mockResolvedValue({
+      id: scenePlanId,
+      adaptationId,
+      episodeNumber: 1,
+      sceneOutline: [
+        { sceneNumber: 1, title: '码头重逢', synopsis: '女主与旧识相遇。', sourceChapterIds: [] },
+      ],
+    });
+    projectService.getById.mockResolvedValue({ id: projectId, title: '雾港来信', chapterCount: 20, updatedAt: createdAt });
+    adaptationDecisionService.list.mockResolvedValue({
+      list: [
+        { type: 'CUT', impact: 'HIGH', proposal: '删去重复港口历史。', status: 'ACCEPTED' },
+      ],
+      total: 1,
+      page: 1,
+      limit: 100,
+    });
+    sourceSceneMappingService.list.mockResolvedValue({ list: [], total: 0, page: 1, limit: 10 });
+    screenplayRevisionService.list.mockResolvedValue({ list: [], total: 0, page: 1, limit: 1 });
+    runService.create.mockResolvedValue({ id: runId });
+    runService.getById.mockResolvedValue(null);
+    runService.update.mockResolvedValue({
+      id: runId,
+      projectId,
+      type: 'SCREENPLAY_SCENE_DRAFT',
+      status: 'QUEUED',
+      progress: 0,
+      currentStep: 'Queued for generation',
+      architecture: null,
+      outline: null,
+      chapterContent: null,
+      factChanges: [],
+      modelConfig: {},
+      attemptCount: 0,
+      error: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    projectService.update.mockResolvedValue({ id: projectId, updatedAt: createdAt });
+    runtimeClient.createScreenplaySceneDraftJob.mockResolvedValue({
+      id: runId,
+      ownerId,
+      project: { id: projectId, title: '雾港来信' },
+      status: 'queued',
+      progress: 0,
+      currentStep: 'Queued for generation',
+      createdAt: createdAt.toISOString(),
+      updatedAt: createdAt.toISOString(),
+    });
+
+    await service.createAdaptationScreenplaySceneDraft(ownerId, adaptationId, {
+      episodeNumber: 1,
+      sceneNumber: 1,
+      prompt: '强化冷峻氛围。',
+    });
+
+    expect(runtimeClient.createScreenplaySceneDraftJob).toHaveBeenCalledWith(
+      ownerId,
+      projectId,
+      expect.any(String),
+      expect.objectContaining({ title: '雾港来信' }),
+      expect.objectContaining({
+        brief: expect.objectContaining({ targetFormat: 'series', episodeCount: 12 }),
+        scenePlan: expect.objectContaining({ episodeNumber: 1, sceneNumber: 1, title: '码头重逢' }),
+        decisions: [
+          expect.objectContaining({ type: 'cut', impact: 'high', outcome: 'accepted' }),
+        ],
+      }),
+      '强化冷峻氛围。',
+    );
+    expect(runService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'SCREENPLAY_SCENE_DRAFT', status: 'QUEUED' }),
+    );
   });
 
   it('projects a dispatch failure after persisting the project and queued run', async () => {

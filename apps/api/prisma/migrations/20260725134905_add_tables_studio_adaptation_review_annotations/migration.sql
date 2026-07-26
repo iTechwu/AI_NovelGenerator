@@ -1,8 +1,0 @@
--- RenameIndex
-ALTER INDEX "studio_adaptation_review_annotations_adaptation_id_episode_numb" RENAME TO "studio_adaptation_review_annotations_adaptation_id_episode__key";
-
--- RenameIndex
-ALTER INDEX "studio_standalone_screenplay_revisions_project_id_created_at_id" RENAME TO "studio_standalone_screenplay_revisions_project_id_created_a_idx";
-
--- RenameIndex
-ALTER INDEX "studio_standalone_screenplay_scenes_project_id_episode_number_s" RENAME TO "studio_standalone_screenplay_scenes_project_id_episode_numb_key";

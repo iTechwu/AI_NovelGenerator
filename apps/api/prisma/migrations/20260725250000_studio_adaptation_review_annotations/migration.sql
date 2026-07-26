@@ -17,8 +17,9 @@ CREATE TABLE "studio_adaptation_review_annotations" (
     CONSTRAINT "studio_adaptation_review_annotations_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE UNIQUE INDEX "studio_adaptation_review_annotations_adaptation_id_episode_number_scene_num_key" ON "studio_adaptation_review_annotations"("adaptation_id", "episode_number", "scene_number");
+-- CreateIndex (canonical ≤63-char name; oversized names get truncated by PG and
+-- trigger spurious rename diffs that fail shadow-DB replay)
+CREATE UNIQUE INDEX "studio_adaptation_review_annotations_adaptation_id_episode__key" ON "studio_adaptation_review_annotations"("adaptation_id", "episode_number", "scene_number");
 
 -- AddForeignKey
 ALTER TABLE "studio_adaptation_review_annotations" ADD CONSTRAINT "studio_adaptation_review_annotations_adaptation_id_fkey" FOREIGN KEY ("adaptation_id") REFERENCES "studio_adaptation_projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;

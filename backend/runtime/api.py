@@ -56,15 +56,20 @@ class CreateJobRequest(BaseModel):
     ownerId: UUID
     jobId: UUID
     project: ProjectInput
-    kind: Literal['blueprint', 'chapter_draft', 'chapter_draft_full'] = 'blueprint'
+    kind: Literal['blueprint', 'chapter_draft', 'chapter_draft_full', 'finalize_full', 'screenplay_scene_draft'] = 'blueprint'
     blueprint: 'BlueprintInput | None' = None
     chapterPlan: 'ChapterPlanInput | None' = None
+    screenplayScene: 'ScreenplaySceneDraftInput | None' = None
     prompt: str = Field(default='', max_length=2_000)
 
     @model_validator(mode='after')
     def require_confirmed_inputs_for_chapter_draft(self):
         if self.kind in ('chapter_draft', 'chapter_draft_full') and (not self.blueprint or not self.chapterPlan):
             raise ValueError('chapter_draft requires blueprint and chapterPlan')
+        if self.kind == 'finalize_full' and not self.chapterPlan:
+            raise ValueError('finalize_full requires chapterPlan')
+        if self.kind == 'screenplay_scene_draft' and not self.screenplayScene:
+            raise ValueError('screenplay_scene_draft requires screenplayScene')
         return self
 
 
@@ -87,6 +92,43 @@ class ChapterPlanInput(BaseModel):
     hook: str = ''
 
 
+# ---- Adaptation screenplay scene generation (novel -> screenplay) ----------
+# The adaptation brief, planned scene, resolved decisions and the immutable
+# source excerpt are sent by NestJS so the runtime stays stateless and never
+# reads the novel DB directly.
+
+class ScreenplayBriefInput(BaseModel):
+    targetFormat: Literal['series', 'short_drama'] = 'series'
+    targetAudience: str = Field(default='', max_length=500)
+    adaptationGoal: str = Field(default='', max_length=4_000)
+    mustPreserve: str = Field(default='', max_length=4_000)
+    episodeCount: int = Field(default=1, ge=1, le=100)
+    minutesPerEpisode: int = Field(default=45, ge=1, le=120)
+
+
+class ScreenplayScenePlanInput(BaseModel):
+    episodeNumber: int = Field(ge=1, le=100)
+    sceneNumber: int = Field(ge=1, le=200)
+    title: str = Field(default='', max_length=200)
+    synopsis: str = Field(default='', max_length=4_000)
+    act: Literal['setup', 'development', 'twist', 'resolution'] | None = None
+
+
+class ScreenplayDecisionInput(BaseModel):
+    type: Literal['cut', 'merge', 'reorder', 'pov_change', 'expand']
+    impact: Literal['low', 'medium', 'high'] = 'medium'
+    proposal: str = Field(min_length=1, max_length=4_000)
+    outcome: Literal['accepted', 'edited', 'rejected'] = 'accepted'
+
+
+class ScreenplaySceneDraftInput(BaseModel):
+    brief: ScreenplayBriefInput
+    scenePlan: ScreenplayScenePlanInput
+    decisions: list[ScreenplayDecisionInput] = Field(default_factory=list, max_length=100)
+    sourceExcerpt: str = Field(default='', max_length=20_000)
+    priorScreenplay: str = Field(default='', max_length=20_000)
+
+
 class ProjectSummary(ProjectInput):
     pass
 
@@ -95,9 +137,10 @@ class GenerationJob(BaseModel):
     id: UUID
     ownerId: UUID
     project: ProjectSummary
-    kind: Literal['blueprint', 'chapter_draft', 'chapter_draft_full'] = 'blueprint'
+    kind: Literal['blueprint', 'chapter_draft', 'chapter_draft_full', 'finalize_full', 'screenplay_scene_draft'] = 'blueprint'
     blueprint: BlueprintInput | None = None
     chapterPlan: ChapterPlanInput | None = None
+    screenplayScene: ScreenplaySceneDraftInput | None = None
     prompt: str = ''
     modelConfig: dict[str, str] = Field(default_factory=dict)
     status: Literal['queued', 'running', 'succeeded', 'failed', 'cancelled']
@@ -330,6 +373,27 @@ async def run_job(job_id: UUID) -> None:
                 job.id,
                 lambda progress, step: update_job(job, progress, step),
             )
+        elif job.kind == 'finalize_full':
+            if not job.chapterPlan:
+                raise RuntimeError('Finalize job is missing chapterPlan')
+            artifact = await asyncio.to_thread(
+                engine.finalize_chapter_full,
+                job.project,
+                job.chapterPlan.chapterNumber,
+                job.id,
+                lambda progress, step: update_job(job, progress, step),
+            )
+        elif job.kind == 'screenplay_scene_draft':
+            if not job.screenplayScene:
+                raise RuntimeError('Screenplay scene draft job is missing adaptation inputs')
+            artifact = await asyncio.to_thread(
+                engine.generate_screenplay_scene_draft,
+                job.project,
+                job.screenplayScene,
+                job.prompt,
+                job.id,
+                lambda progress, step: update_job(job, progress, step),
+            )
         else:
             artifact = await asyncio.to_thread(
                 engine.generate,
@@ -389,6 +453,7 @@ async def create_generation_job(
         kind=request.kind,
         blueprint=request.blueprint,
         chapterPlan=request.chapterPlan,
+        screenplayScene=request.screenplayScene,
         prompt=request.prompt,
         modelConfig={
             'provider': 'python-runtime',
@@ -413,6 +478,7 @@ async def create_generation_job(
         'project': job.project.model_dump(mode='json'),
         'blueprint': job.blueprint.model_dump(mode='json') if job.blueprint else None,
         'chapterPlan': job.chapterPlan.model_dump(mode='json') if job.chapterPlan else None,
+        'screenplayScene': job.screenplayScene.model_dump(mode='json') if job.screenplayScene else None,
         'prompt': job.prompt,
         'modelConfig': job.modelConfig,
     })

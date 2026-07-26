@@ -517,3 +517,34 @@ P0-01 正文修订
 - 本会话累计新增迁移（C56/C58/C62/C73/C76/C77）：`studio_scene_plans`、`studio_source_scene_mappings`、`studio_screenplay_scene_revisions`、`adaptation_snapshot_history`、`add_enum_studio_adaptation_event_type`、`studio_adaptation_review_annotations`，均须先在隔离 PostgreSQL 演练再部署。
 - 仍待实施（非本轮代码可完成）：(1) 来源变更 webhook 自动触发、改编事件 SSE 重连/多实例演练；(2) 逐场 AI 剧本生成运行时（AI 来源，需 Python/LLM）；(3) 对照审阅左右联动滚动与内联裁决；(4) P12 独立三栏工作台（并发工作正在推进独立页面路由）；(5) 真实作者可用性测试与 M1 准入数据采集需部署或用户研究环境。
 - 已知既存阻断（与本轮无关）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 报告 70 条连带错误，未伪造历史资料。
+
+### C80 实施与复核：逐场 AI 剧本生成（Python 运行时）
+
+- 已实施（Python runtime，2026-07-26）：新增 `screenplay_scene_draft` 作业类型。`backend/runtime/api.py` 增加只读输入模型 `ScreenplayBriefInput/ScreenplayScenePlanInput/ScreenplayDecisionInput/ScreenplaySceneDraftInput`（改编简报、场景计划、已裁决取舍、不可变来源段落、上一场剧本）；`CreateJobRequest`/`GenerationJob` 扩展 `screenplayScene` 字段与校验（缺省即拒）。`run_job` 派发到新引擎方法，输入快照与作业对象均保留该字段。
+- 已实施（engine，2026-07-26）：`GenerationEngine.generate_screenplay_scene_draft` 基于改编上下文构建 Fountain 生成提示（项目定位/改编目标/必须保留/本场计划/已确认取舍/来源段落/上一场/作者要求），用 `model_chapter_draft` 角色调用 LLM；模型失败时回退到可编辑 starter 场景；输出按 `(episode, scene)` 落盘可恢复，返回 `{screenplayScene}`。运行时仍无状态、不读小说 DB。
+- 已通过：`backend/tests` **28 通过**（+3，覆盖作业派发与输入快照保留、缺省即拒、starter 为可编辑 Fountain）；既有 checkpoint 快照断言因新增 `screenplayScene` 字段同步更新。
+- 待实施：NestJS 派发 + AI 剧本修订创建（C81）、前端入口（C82）；真实 LLM 端到端生成仍需部署环境（配置 `LLM_API_KEY`/各角色模型）。
+
+### C81 实施与复核：AI 场景剧本派发与 AI 修订创建（NestJS 侧）
+
+- 已实施（数据/契约，2026-07-26）：`StudioGenerationRunType` 新增 `SCREENPLAY_SCENE_DRAFT`（迁移 `20260725260000`，`ADD VALUE`）；契约 `StudioArtifactSchema` 增加 `screenplayScene` 字段，新增 `CreateStudioScreenplaySceneDraftSchema` 与 `POST /adaptations/:adaptationId/screenplay-scene-drafts`（202 返回生成作业）。
+- 已实施（client，2026-07-26）：`NovelRuntimeClient.createScreenplaySceneDraftJob` 把改编上下文（brief/scenePlan/decisions/sourceExcerpt/priorScreenplay）作为 `screenplay_scene_draft` 作业派发到 Python 运行时。
+- 已实施（service，2026-07-26）：`createAdaptationScreenplaySceneDraft` 校验阶段（须过场景计划）、场景存在，聚合已裁决取舍、溯源来源段落、上一场剧本，创建 `SCREENPLAY_SCENE_DRAFT` 运行（`inputSummary` 携带 `{adaptationId, episodeNumber, sceneNumber}`），派发并审计。`syncRun` 把 `screenplayScene` 写入 `chapterContent`，并在成功时调用 `createScreenplaySceneRevisionFromRun` 从 `inputSummary` 解析上下文、幂等创建 `source='AI'` 的不可变场景剧本修订（按版本递增）。
+- 已通过：`apps/api` studio 测试 66 项（服务 62 + worker 4；+1，覆盖派发上下文与运行类型）、契约 studio 测试 15 项、API `tsconfig.type-check.json` 与 contracts `tsc --noEmit` 类型检查通过。
+- 待实施：前端「AI 生成场景剧本」入口（C82）；真实 LLM 端到端生成需部署环境；多实例运行时下的幂等与恢复演练。
+
+### C82 实施与复核：AI 场景剧本前端入口（P12 AI 生成前端）
+
+- 已实施（Web，2026-07-26）：场景剧本面板新增「AI 生成场景剧本」表单——按当前集/场（沿用 screenplayDraft 的 episodeNumber/sceneNumber）+ 可选生成要求，调用 C81 的 `createAdaptationScreenplaySceneDraft`（202）；派发成功后清空要求并延迟 3s 重新拉取剧本修订列表，使异步生成的 AI 修订可见。
+- 已通过：Web `studio-workbench` 测试 31 项（+1，覆盖 script_writing 下派发 AI 场景剧本写回）、`apps/web` `tsc --noEmit` 类型检查通过。
+- 待实施：AI 生成完成即时的 SSE 驱动剧本列表刷新（当前为延迟拉取）、真实 LLM 端到端生成需部署环境。
+
+### C83 复核结论：C80-C82 逐场 AI 剧本生成运行时全链路落地
+
+- 本轮完成「逐场 AI 剧本生成」全链路（C80-C82），打通 PRD P12/P13 的 AI 来源剧本生成：Python 运行时新增 `screenplay_scene_draft` 作业（无状态、接收改编上下文、Fountain 提示、可恢复落盘）；NestJS 派发、聚合已裁决取舍/来源段落/上一场上下文、创建 `SCREENPLAY_SCENE_DRAFT` 运行并在成功时幂等创建 `source='AI'` 不可变场景剧本修订；前端提供「AI 生成本场」入口。改编管线至此覆盖「author + AI」两种剧本来源。
+- 已通过：`pnpm test`（`apps/api` studio 66 = 服务 62 + worker 4；`apps/web` 35 跨 3 文件；`packages/contracts` 62；全仓 9/9 任务绿）、`pnpm type-check` 6/6、`git diff --check` 干净。
+- 已通过质量门禁：`check:architecture`、`check:list-contracts`、`check:cross-project-boundaries` 全部 PASS。
+- Python 运行时：`backend/tests` **28 通过**（+3，覆盖 `screenplay_scene_draft` 派发/输入快照/缺省即拒/starter）。
+- 本会话累计新增迁移（C56/C58/C62/C73/C76/C77/C81）：7 份，均须先在隔离 PostgreSQL 演练再部署。其中 C81 仅 `ADD VALUE` 扩展运行类型枚举（`SCREENPLAY_SCENE_DRAFT`）。
+- 仍待实施（非本轮代码可完成）：(1) 真实 LLM 端到端生成演练（需部署环境配置 `LLM_API_KEY`/各角色模型）；(2) AI 生成完成的 SSE 驱动剧本列表即时刷新、多实例运行时幂等与恢复演练；(3) 来源变更 webhook 自动触发、对照审阅左右联动、P12 独立三栏工作台、真实作者可用性测试与 M1 准入。
+- 已知既存阻断（与本轮无关）：`check:0628-doc-status` 仍因缺失五份历史 `docs/0628/*` 报告 70 条连带错误，未伪造历史资料。

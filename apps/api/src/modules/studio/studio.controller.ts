@@ -536,6 +536,22 @@ export class StudioController {
     }));
   }
 
+  @TsRestHandler(c.createAdaptationScreenplaySceneDraft)
+  async createAdaptationScreenplaySceneDraft(@Req() request: AuthenticatedRequest) {
+    return tsRestHandler(c.createAdaptationScreenplaySceneDraft, async ({ params, body }) => ({
+      status: 202 as const,
+      body: {
+        code: 202,
+        msg: 'accepted',
+        data: await this.studioService.createAdaptationScreenplaySceneDraft(
+          request.userId,
+          params.adaptationId,
+          body,
+        ),
+      },
+    }));
+  }
+
   @TsRestHandler(c.exportProject)
   async exportProject(@Req() request: AuthenticatedRequest) {
     return tsRestHandler(c.exportProject, async ({ params, query }) => ({

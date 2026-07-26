@@ -127,6 +127,7 @@ import type {
   StudioSourceSceneMappingListResponse,
   StudioScreenplaySceneRevision as StudioScreenplaySceneRevisionResponse,
   CreateStudioScreenplaySceneRevision,
+  CreateStudioScreenplaySceneDraft,
   StudioScreenplaySceneRevisionListQuery,
   StudioScreenplaySceneRevisionListResponse,
   StudioAdaptationExport as StudioAdaptationExportResponse,
@@ -1685,6 +1686,163 @@ export class StudioService {
       { adaptationId, episodeNumber: input.episodeNumber, sceneNumber: input.sceneNumber },
     );
     return this.toReviewAnnotation(annotation);
+  }
+
+  async createAdaptationScreenplaySceneDraft(
+    userId: string,
+    adaptationId: string,
+    input: CreateStudioScreenplaySceneDraft,
+  ): Promise<GenerationJob> {
+    const adaptation = await this.getOwnedAdaptation(userId, adaptationId);
+    if (
+      adaptation.status === 'BRIEF_DRAFT' ||
+      adaptation.status === 'BLUEPRINT_REVIEW' ||
+      adaptation.status === 'SCENE_PLANNING'
+    ) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '请先进入剧本生成阶段，再请求 AI 场景剧本。',
+      });
+    }
+    const scenePlan = await this.scenePlanService.get({
+      adaptationId,
+      episodeNumber: input.episodeNumber,
+    });
+    if (!scenePlan) {
+      throw apiError(CommonErrorCode.BadRequest, { message: '该集场景计划不存在。' });
+    }
+    const outline = (scenePlan.sceneOutline ?? []) as StudioScenePlanSceneOutline;
+    const scene = outline.find((item) => item.sceneNumber === input.sceneNumber);
+    if (!scene) {
+      throw apiError(CommonErrorCode.BadRequest, {
+        message: '该集不存在此场景编号，无法生成剧本。',
+      });
+    }
+    const sourceProject = await this.projectService.getById(adaptation.sourceProjectId);
+    if (!sourceProject) {
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '来源作品不存在，请联系支持人员。',
+      });
+    }
+
+    const decisions = await this.adaptationDecisionService.list(
+      { adaptationId, status: { in: ['ACCEPTED', 'EDITED'] } },
+      { page: 1, limit: 100, orderBy: { createdAt: 'asc' } },
+    );
+    // Source excerpt: the immutable source chapter(s) this scene is anchored to.
+    const mappings = await this.sourceSceneMappingService.list(
+      { adaptationId, episodeNumber: input.episodeNumber, sceneNumber: input.sceneNumber },
+      { page: 1, limit: 10 },
+    );
+    let sourceExcerpt = '';
+    if (mappings.list.length > 0) {
+      const chapters = await Promise.all(
+        mappings.list.map((mapping) =>
+          this.adaptationSourceChapterService.getById(mapping.sourceChapterId),
+        ),
+      );
+      sourceExcerpt = chapters
+        .filter((chapter): chapter is StudioAdaptationSourceChapter => Boolean(chapter))
+        .map((chapter) => chapter.content)
+        .join('\n\n')
+        .slice(0, 20_000);
+    }
+    // Prior screenplay: latest revision of the previous scene for continuity.
+    let priorScreenplay = '';
+    if (input.sceneNumber > 1) {
+      const prior = await this.screenplayRevisionService.list(
+        {
+          adaptationId,
+          episodeNumber: input.episodeNumber,
+          sceneNumber: input.sceneNumber - 1,
+        },
+        { page: 1, limit: 1, orderBy: { version: 'desc' } },
+      );
+      priorScreenplay = prior.list[0]?.content ?? '';
+    }
+
+    const runId = randomUUID();
+    await this.runService.create({
+      id: runId,
+      project: { connect: { id: adaptation.sourceProjectId } },
+      type: 'SCREENPLAY_SCENE_DRAFT',
+      status: 'QUEUED',
+      progress: 0,
+      currentStep: 'Queued for screenplay scene draft',
+      inputSummary: JSON.stringify({
+        adaptationId,
+        episodeNumber: input.episodeNumber,
+        sceneNumber: input.sceneNumber,
+      }),
+      modelConfig: { provider: 'python-runtime' },
+    });
+    await this.emitAdaptationStatusEvent(
+      adaptation.sourceProjectId,
+      adaptationId,
+      'script_writing',
+    );
+    await this.auditLogService.logCreate('studio.generation_run', runId, userId, {
+      action: 'create_screenplay_scene_draft',
+      adaptationId,
+      episodeNumber: input.episodeNumber,
+      sceneNumber: input.sceneNumber,
+    });
+
+    try {
+      const runtimeJob = await this.runtimeClient.createScreenplaySceneDraftJob(
+        userId,
+        adaptation.sourceProjectId,
+        runId,
+        this.toRuntimeProject(sourceProject),
+        {
+          brief: {
+            targetFormat: adaptation.targetFormat === 'SERIES' ? 'series' : 'short_drama',
+            targetAudience: adaptation.targetAudience,
+            adaptationGoal: adaptation.adaptationGoal,
+            mustPreserve: adaptation.mustPreserve,
+            episodeCount: adaptation.episodeCount,
+            minutesPerEpisode: adaptation.minutesPerEpisode,
+          },
+          scenePlan: {
+            episodeNumber: input.episodeNumber,
+            sceneNumber: input.sceneNumber,
+            title: scene.title,
+            synopsis: scene.synopsis,
+            act: scene.act ?? null,
+          },
+          decisions: decisions.list.map((decision) => ({
+            type: this.toAdaptationDecisionTypeResponse(decision.type),
+            impact: decision.impact.toLowerCase() as 'low' | 'medium' | 'high',
+            proposal: decision.proposal,
+            outcome: decision.status.toLowerCase() as 'accepted' | 'edited' | 'rejected',
+          })),
+          sourceExcerpt,
+          priorScreenplay,
+        },
+        input.prompt,
+      );
+      const run = await this.syncRun(runId, runtimeJob);
+      return this.toGenerationJob(sourceProject, run);
+    } catch (error) {
+      const failedRun = await this.runService.update(
+        { id: runId },
+        {
+          status: 'FAILED',
+          progress: 100,
+          currentStep: 'Screenplay draft service unavailable',
+          error: '创作运行时暂时不可用，请稍后重试。',
+        },
+      );
+      await this.emitAdaptationStatusEvent(
+        adaptation.sourceProjectId,
+        adaptationId,
+        'script_writing',
+      );
+      throw apiError(CommonErrorCode.InternalServerError, {
+        message: '场景剧本生成派发失败，请稍后重试。',
+        cause: error,
+        ...(failedRun ? {} : {}),
+      });
+    }
   }
 
   async previewProjectImport(
@@ -3439,7 +3597,11 @@ export class StudioService {
         currentStep: runtimeJob.currentStep,
         architecture: runtimeJob.artifact?.architecture ?? previous?.architecture ?? null,
         outline: runtimeJob.artifact?.outline ?? previous?.outline ?? null,
-        chapterContent: runtimeJob.artifact?.chapterDraft ?? previous?.chapterContent ?? null,
+        chapterContent:
+          runtimeJob.artifact?.chapterDraft ??
+          runtimeJob.artifact?.screenplayScene ??
+          previous?.chapterContent ??
+          null,
         factChanges: JSON.parse(
           JSON.stringify(runtimeJob.artifact?.factChanges ?? previous?.factChanges ?? []),
         ),
@@ -3476,7 +3638,69 @@ export class StudioService {
     if (run.status === 'SUCCEEDED' && run.type === 'CHAPTER_DRAFT' && run.chapterContent) {
       await this.createChapterRevisionFromRun(run);
     }
+    if (
+      run.status === 'SUCCEEDED' &&
+      run.type === 'SCREENPLAY_SCENE_DRAFT' &&
+      run.chapterContent
+    ) {
+      await this.createScreenplaySceneRevisionFromRun(run);
+    }
     return run;
+  }
+
+  private async createScreenplaySceneRevisionFromRun(
+    run: StudioGenerationRun,
+  ): Promise<void> {
+    // The adaptation target + scene coordinates were persisted in inputSummary
+    // at dispatch time; the runtime is stateless and does not carry them.
+    let context: { adaptationId?: string; episodeNumber?: number; sceneNumber?: number } = {};
+    try {
+      context = run.inputSummary ? JSON.parse(run.inputSummary) : {};
+    } catch {
+      context = {};
+    }
+    if (!context.adaptationId || !context.episodeNumber || !context.sceneNumber) {
+      this.logger.warn('Screenplay run missing adaptation context', { runId: run.id });
+      return;
+    }
+    const adaptationId = context.adaptationId;
+    const episodeNumber = context.episodeNumber;
+    const sceneNumber = context.sceneNumber;
+
+    // Idempotency: a run already materialized into a revision must not double-create.
+    const existing = await this.screenplayRevisionService.get({ sourceRevisionId: run.id });
+    if (existing) {
+      return;
+    }
+    const scenePlan = await this.scenePlanService.get({ adaptationId, episodeNumber });
+    if (!scenePlan) {
+      this.logger.warn('Screenplay run references a missing scene plan', {
+        runId: run.id,
+        adaptationId,
+        episodeNumber,
+      });
+      return;
+    }
+    const { list } = await this.screenplayRevisionService.list(
+      { scenePlanId: scenePlan.id, sceneNumber },
+      { page: 1, limit: 1, orderBy: { version: 'desc' } },
+    );
+    const revision = await this.screenplayRevisionService.create({
+      adaptation: { connect: { id: adaptationId } },
+      scenePlan: { connect: { id: scenePlan.id } },
+      episodeNumber,
+      sceneNumber,
+      source: 'AI',
+      sourceRevisionId: run.id,
+      version: (list[0]?.version ?? 0) + 1,
+      content: run.chapterContent!,
+      contentHash: this.hashContent(run.chapterContent!),
+      wordCount: this.countWords(run.chapterContent!),
+      editSummary: 'AI 生成场景剧本',
+    });
+    // AI revisions materialize from background run sync (no request-scoped user);
+    // the dispatch itself was already audited in createAdaptationScreenplaySceneDraft.
+    void revision;
   }
 
   private async createBlueprintFromRun(run: StudioGenerationRun): Promise<void> {
@@ -4164,6 +4388,22 @@ export class StudioService {
       reorder: 'REORDER',
       pov_change: 'POV_CHANGE',
       expand: 'EXPAND',
+    };
+    return types[type];
+  }
+
+  private toAdaptationDecisionTypeResponse(
+    type: StudioAdaptationDecision['type'],
+  ): 'cut' | 'merge' | 'reorder' | 'pov_change' | 'expand' {
+    const types: Record<
+      StudioAdaptationDecision['type'],
+      'cut' | 'merge' | 'reorder' | 'pov_change' | 'expand'
+    > = {
+      CUT: 'cut',
+      MERGE: 'merge',
+      REORDER: 'reorder',
+      POV_CHANGE: 'pov_change',
+      EXPAND: 'expand',
     };
     return types[type];
   }

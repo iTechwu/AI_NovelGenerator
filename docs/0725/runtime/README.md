@@ -61,7 +61,7 @@ Studio 模块  (apps/api/src/modules/studio/)  + cron(studio-generation / studio
 | 相关上下文检索 | `get_relevant_context_from_vector_store` (vectorstore_utils.py:206) | ✅ `POST /v1/knowledge/query` | **是** | 是 |
 | 知识上下文过滤 | `get_filtered_knowledge_context` (chapter.py:218) | ❌ | **是** | 是 |
 | 清空向量库 | `clear_vector_store` (vectorstore_utils.py:33) | ✅ `DELETE /v1/knowledge/{projectId}` | 否 | 是 |
-| **章节定稿（完整版）** | `finalize_chapter` (finalization.py:37) | ❌ | **是** | 是 |
+| **章节定稿（完整版）** | `finalize_chapter` (finalization.py:37) | ✅ job `kind=finalize_full` | **是** | 是 |
 | 章节定稿（简化 summary/index） | `engine.execute_finalization_task` | ⚠️ 部分 | 否 | 否 |
 | **章节扩写** | `enrich_chapter_text` (finalization.py:115) | ✅ `POST /v1/chapters/enrich` | 否 | 否(传文本) |
 | **一致性校验（LLM）** | `check_consistency` (consistency_checker.py:27) | ✅ `POST /v1/reviews/consistency` | 否 | 否(传文本) |
@@ -215,7 +215,7 @@ NestJS Studio
 | **P0 前置** | embedding 环境变量 + RuntimeSettings + adapter 装配；start 脚本透传 `EMBEDDING_*` | 决策点 A |
 | **P1 不依赖 embedding 的能力** | ✅ **已完成（4/4）**：`review-consistency` / `enrich` / `parse-blueprint` / `summarize-recent` 端点 + 客户端 + 契约 + 测试。原 `preview-prompt` 经核实是 `build_chapter_prompt` 的内部步骤（读工作区文件 + RAG + LLM），已归入 P3。 | 无 |
 | **P2 知识库 / RAG** | ✅ **已完成**：`knowledge/import` · `query` · `clear`（按 projectId 隔离，复用 build_embedding_adapter + chroma）。`list/stats` 暂缓。 | P0 |
-| **P3 完整编排生成** | ✅ `chapter_draft_full` job 已落地（物化 blueprint 到项目工作区 → build_chapter_prompt + RAG + 摘要 → LLM；章节跨 job 累积）。`finalize_full` 待做。 | P0、P2 |
+| **P3 完整编排生成** | ✅ **已完成**：`chapter_draft_full`（完整草稿：build_chapter_prompt + RAG + 摘要 + LLM）+ `finalize_full`（更新 global_summary/character_state + 并入向量库）。章节跨 job 累积，构成完整顺序写作循环。 | P0、P2 |
 | **P4 NestJS Studio 接线** | Studio 服务 + cron 编排完整流水线；前端调用 | P1–P3 |
 | **P5 收尾** | 灰度切换、文档、契约版本兼容、观测（已有 checkpoint） | — |
 

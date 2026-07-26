@@ -434,6 +434,8 @@ export function StudioWorkbench({
     editSummary: '',
   });
   const [isSavingScreenplayRevision, setIsSavingScreenplayRevision] = useState(false);
+  const [screenplayAiPrompt, setScreenplayAiPrompt] = useState('');
+  const [isGeneratingScreenplayAi, setIsGeneratingScreenplayAi] = useState(false);
   const [screenplayError, setScreenplayError] = useState<string | null>(null);
   const [adaptationExportFormat, setAdaptationExportFormat] = useState<'fountain' | 'txt'>('fountain');
   const [isExportingAdaptation, setIsExportingAdaptation] = useState(false);
@@ -1723,6 +1725,35 @@ export function StudioWorkbench({
       setScreenplayError('场景剧本保存失败，请稍后重试。');
     } finally {
       setIsSavingScreenplayRevision(false);
+    }
+  };
+
+  const generateScreenplaySceneAi = async () => {
+    if (!selectedAdaptation) return;
+    setIsGeneratingScreenplayAi(true);
+    setScreenplayError(null);
+    try {
+      const response = await studioClient.createAdaptationScreenplaySceneDraft({
+        params: { adaptationId: selectedAdaptation.id },
+        body: {
+          episodeNumber: screenplayDraft.episodeNumber,
+          sceneNumber: screenplayDraft.sceneNumber,
+          prompt: screenplayAiPrompt.trim() || '',
+        },
+      });
+      if (response.status === 202) {
+        setScreenplayError(null);
+        setScreenplayAiPrompt('');
+        // The AI revision is materialized asynchronously when the run succeeds.
+        // Reload the revision list shortly after dispatch so the result appears.
+        setTimeout(() => {
+          if (selectedAdaptation) void loadScreenplayRevisions(selectedAdaptation.id);
+        }, 3_000);
+      } else setScreenplayError('AI 场景剧本派发失败，请稍后重试。');
+    } catch {
+      setScreenplayError('AI 场景剧本派发失败，请稍后重试。');
+    } finally {
+      setIsGeneratingScreenplayAi(false);
     }
   };
 
@@ -3736,6 +3767,42 @@ export function StudioWorkbench({
                                       <Save />
                                     )}
                                     保存场景剧本
+                                  </Button>
+                                </div>
+                              </form>
+                              <form
+                                className="grid gap-2 rounded-md border border-dashed p-3"
+                                onSubmit={(event) => {
+                                  event.preventDefault();
+                                  void generateScreenplaySceneAi();
+                                }}
+                              >
+                                <span className="text-xs font-medium text-muted-foreground">
+                                  AI 生成场景剧本
+                                </span>
+                                <Input
+                                  aria-label="AI 场景剧本要求"
+                                  value={screenplayAiPrompt}
+                                  onChange={(event) => setScreenplayAiPrompt(event.target.value)}
+                                  maxLength={2_000}
+                                  placeholder={`对第 ${screenplayDraft.episodeNumber} 集第 ${screenplayDraft.sceneNumber} 场的 AI 生成要求（可选）`}
+                                />
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs text-muted-foreground">
+                                    派发后异步生成，完成后自动刷新剧本列表。
+                                  </span>
+                                  <Button
+                                    type="submit"
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={isGeneratingScreenplayAi}
+                                  >
+                                    {isGeneratingScreenplayAi ? (
+                                      <LoaderCircle className="animate-spin" />
+                                    ) : (
+                                      <Sparkles />
+                                    )}
+                                    AI 生成本场
                                   </Button>
                                 </div>
                               </form>

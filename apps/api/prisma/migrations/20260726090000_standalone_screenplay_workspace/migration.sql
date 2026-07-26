@@ -26,11 +26,11 @@ CREATE TABLE "studio_standalone_screenplay_revisions" (
     CONSTRAINT "studio_standalone_screenplay_revisions_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "studio_standalone_screenplay_scenes_project_id_episode_number_scene_number_key"
+CREATE UNIQUE INDEX "studio_standalone_screenplay_scenes_project_id_episode_numb_key"
 ON "studio_standalone_screenplay_scenes"("project_id", "episode_number", "scene_number");
 CREATE UNIQUE INDEX "studio_standalone_screenplay_revisions_scene_id_version_key"
 ON "studio_standalone_screenplay_revisions"("scene_id", "version");
-CREATE INDEX "studio_standalone_screenplay_revisions_project_id_created_at_idx"
+CREATE INDEX "studio_standalone_screenplay_revisions_project_id_created_a_idx"
 ON "studio_standalone_screenplay_revisions"("project_id", "created_at" DESC);
 
 ALTER TABLE "studio_standalone_screenplay_scenes"

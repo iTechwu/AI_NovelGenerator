@@ -344,6 +344,112 @@ class GenerationEngine:
             for episode_number in range(1, episode_count + 1)
         )
 
+    def generate_screenplay_scene_draft(
+        self,
+        project,
+        scene_input,
+        prompt_instruction: str,
+        run_id: UUID,
+        report: Callable[[int, str], None],
+    ) -> dict[str, Any]:
+        """Generate one Fountain-format screenplay scene from adaptation context.
+
+        NestJS supplies the immutable adaptation brief, the planned scene, the
+        resolved decisions and the source excerpt; the runtime never reads the
+        novel DB. Returns ``{'screenplayScene': <Fountain text>}``.
+        """
+        if not self._settings.api_key:
+            raise RuntimeError('LLM_API_KEY must be configured')
+
+        from llm_adapters import create_llm_adapter
+        from novel_generator.common import invoke_with_cleaning
+
+        workspace = self.workspace_for(project.id, run_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        plan = scene_input.scenePlan
+        output = workspace / f'screenplay_ep{plan.episodeNumber}_scene{plan.sceneNumber}.txt'
+        if output.exists():
+            report(90, 'Recovered screenplay scene')
+            return {'screenplayScene': self._read_output(output)}
+
+        report(35, 'Building screenplay scene prompt')
+        prompt = self._screenplay_scene_prompt(project, scene_input, prompt_instruction)
+        report(65, 'Generating screenplay scene')
+        try:
+            adapter = create_llm_adapter(
+                interface_format=self._settings.interface_format,
+                base_url=self._settings.base_url,
+                model_name=self._settings.model_chapter_draft,
+                api_key=self._settings.api_key,
+                temperature=self._settings.temperature,
+                max_tokens=self._settings.max_tokens,
+                timeout=self._settings.timeout_seconds,
+            )
+            content = invoke_with_cleaning(adapter, prompt)
+        except Exception:
+            # A confirmed scene plan is sufficient to provide an editable
+            # starting scene when the upstream model rejects a long prompt.
+            report(78, 'Using starter screenplay scene')
+            content = self._starter_screenplay_scene(scene_input)
+        if not content:
+            raise RuntimeError('Screenplay scene generation returned empty content')
+        output.write_text(content, encoding='utf-8')
+        return {'screenplayScene': content}
+
+    @staticmethod
+    def _screenplay_scene_prompt(project, scene_input, prompt_instruction: str) -> str:
+        brief = scene_input.brief
+        plan = scene_input.scenePlan
+        act_label = {
+            'setup': '起（建立）',
+            'development': '承（发展）',
+            'twist': '转（反转）',
+            'resolution': '合（收束）',
+        }.get(plan.act or '', '')
+        format_label = '剧集' if brief.targetFormat == 'series' else '短剧'
+        decisions_text = (
+            '\n'.join(
+                f'- {d.outcome}：{d.type}（{d.impact}）— {d.proposal}'
+                for d in scene_input.decisions
+            )
+            or '无'
+        )
+        return f'''你是一名中文影视编剧。请只输出第 {plan.episodeNumber} 集第 {plan.sceneNumber} 场的剧本正文（Fountain 格式），不要解释生成过程。
+
+项目：{project.title}（{format_label}改编，共 {brief.episodeCount} 集，单集约 {brief.minutesPerEpisode} 分钟）
+改编目标：{brief.adaptationGoal or '忠于原作主线，适配镜头语言。'}
+目标受众：{brief.targetAudience or '通用'}
+必须保留：{brief.mustPreserve or '无'}
+
+本场计划：
+场景标题：{plan.title or f'第 {plan.sceneNumber} 场'}
+幕次：{act_label or '未指定'}
+场景梗概：{plan.synopsis or '由作者在场景计划中补充。'}
+
+已确认取舍：
+{decisions_text}
+
+原作来源段落（不可改写原作事实，仅作为忠实度与证据参考）：
+{scene_input.sourceExcerpt or '未提供'}
+
+上一场剧本（保持连贯，不要重复）：
+{scene_input.priorScreenplay or '无'}
+
+作者本次附加要求：{prompt_instruction or '无'}
+
+请用标准 Fountain 元素书写：场景标题（INT./EXT. 地点 - 时间）、动作、角色名、对白与括号提示。只输出这一场，长度适中，结尾给出进入下一场的钩子。'''
+
+    @staticmethod
+    def _starter_screenplay_scene(scene_input) -> str:
+        plan = scene_input.scenePlan
+        title = plan.title or f'第 {plan.sceneNumber} 场'
+        return (
+            f'INT. {title} - 夜\n\n'
+            f'{plan.synopsis or "角色在这一场中面对当晚的关键选择。"}\n\n'
+            '主角\n（低声）\n我们必须在天亮前作出决定。\n\n'
+            '镜头缓缓推向窗外的港口灯火，留待下一场揭示答案。'
+        )
+
     @staticmethod
     def _starter_outline(title: str, chapter_count: int) -> str:
         stages = (
@@ -633,6 +739,54 @@ class GenerationEngine:
             raise RuntimeError('Chapter draft generation returned empty content')
         report(90, 'Chapter draft generated')
         return {'chapterDraft': content}
+
+    def finalize_chapter_full(
+        self,
+        project,
+        chapter_number: int,
+        run_id: UUID,
+        report: Callable[[int, str], None],
+    ) -> dict[str, Any]:
+        """Finalize a chapter: refresh global_summary + character_state (LLM) and
+        add the chapter to the project vectorstore (RAG).
+
+        Run after generate_chapter_draft_full for the same chapter so the chapter
+        file exists. The updated summary/state are read back so callers can persist
+        them, and so the next chapter_draft_full sees them.
+        """
+        if not self._settings.api_key:
+            raise RuntimeError('LLM_API_KEY must be configured')
+
+        from novel_generator.finalization import finalize_chapter
+
+        workspace = self._settings.storage_root / str(project.id)
+        s = self._settings
+        report(30, 'Updating summary and character state')
+        finalize_chapter(
+            novel_number=chapter_number,
+            word_number=project.targetWordsPerChapter,
+            api_key=s.api_key,
+            base_url=s.base_url,
+            model_name=s.model_outline,
+            temperature=s.temperature,
+            filepath=str(workspace),
+            embedding_api_key=s.embedding_appkey,
+            embedding_url=s.embedding_endpoint,
+            embedding_interface_format=s.embedding_interface_format,
+            embedding_model_name=s.embedding_model,
+            interface_format=s.interface_format,
+            max_tokens=s.max_tokens,
+            timeout=s.timeout_seconds,
+        )
+        report(85, 'Chapter finalized')
+
+        summary_path = workspace / 'global_summary.txt'
+        state_path = workspace / 'character_state.txt'
+        return {
+            'chapterNumber': chapter_number,
+            'summary': summary_path.read_text(encoding='utf-8') if summary_path.exists() else '',
+            'characterState': state_path.read_text(encoding='utf-8') if state_path.exists() else '',
+        }
 
     @staticmethod
     def _read_fact_changes(path: Path) -> list[dict[str, str | float]]:

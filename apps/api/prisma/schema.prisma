@@ -261,8 +261,9 @@ enum StudioGenerationRunStatus {
 }
 
 enum StudioGenerationRunType {
-  BLUEPRINT     @map("blueprint")
-  CHAPTER_DRAFT @map("chapter_draft")
+  BLUEPRINT               @map("blueprint")
+  CHAPTER_DRAFT           @map("chapter_draft")
+  SCREENPLAY_SCENE_DRAFT  @map("screenplay_scene_draft")
 
   @@map("studio_generation_run_type")
 }

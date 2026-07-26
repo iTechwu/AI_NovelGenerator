@@ -24,6 +24,7 @@ const {
   resolveSourceSceneMapping,
   listScreenplaySceneRevisions,
   createScreenplaySceneRevision,
+  createAdaptationScreenplaySceneDraft,
   exportAdaptation,
   listAdaptationSourceDrift,
   markSourceSceneMappingsStale,
@@ -80,6 +81,7 @@ const {
   resolveSourceSceneMapping: vi.fn(),
   listScreenplaySceneRevisions: vi.fn(),
   createScreenplaySceneRevision: vi.fn(),
+  createAdaptationScreenplaySceneDraft: vi.fn(),
   exportAdaptation: vi.fn(),
   listAdaptationSourceDrift: vi.fn(),
   markSourceSceneMappingsStale: vi.fn(),
@@ -141,6 +143,7 @@ vi.mock('@/lib/api/contracts/client', () => ({
     resolveSourceSceneMapping,
     listScreenplaySceneRevisions,
     createScreenplaySceneRevision,
+    createAdaptationScreenplaySceneDraft,
     exportAdaptation,
     listAdaptationSourceDrift,
     markSourceSceneMappingsStale,
@@ -230,6 +233,7 @@ describe('StudioWorkbench', () => {
     resolveSourceSceneMapping.mockReset();
     listScreenplaySceneRevisions.mockReset();
     createScreenplaySceneRevision.mockReset();
+    createAdaptationScreenplaySceneDraft.mockReset();
     exportAdaptation.mockReset();
     listAdaptationSourceDrift.mockReset();
     markSourceSceneMappingsStale.mockReset();
@@ -319,6 +323,7 @@ describe('StudioWorkbench', () => {
       body: { data: { list: [], total: 0, page: 1, limit: 200 } },
     });
     createScreenplaySceneRevision.mockResolvedValue({ status: 500 });
+    createAdaptationScreenplaySceneDraft.mockResolvedValue({ status: 500 });
     exportAdaptation.mockResolvedValue({ status: 500 });
     listAdaptationSourceDrift.mockResolvedValue({
       status: 200,
@@ -1469,6 +1474,66 @@ describe('StudioWorkbench', () => {
           content,
           editSummary: undefined,
         },
+      });
+    });
+  });
+
+  it('dispatches an AI screenplay scene draft from the workbench', async () => {
+    const adaptationId = '723b82cf-cfa4-4ddc-b11a-bc89f42f73a7';
+    const scriptWritingAdaptation = {
+      id: adaptationId,
+      sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+      targetFormat: 'series' as const,
+      episodeCount: 12,
+      minutesPerEpisode: 45,
+      targetAudience: '悬疑剧观众',
+      adaptationGoal: '保留原作悬疑主线。',
+      mustPreserve: '保留雾港秘密。',
+      status: 'script_writing' as const,
+      sourceSnapshot: {
+        id: 'f3d24d48-5b32-4ba1-8d10-978eb8e4f817',
+        sourceProjectId: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1',
+        sourceProjectTitle: '雾港来信',
+        sourceProjectUpdatedAt: '2026-07-24T02:00:00.000Z',
+        sourceChapterCount: 2,
+        createdAt: '2026-07-24T02:00:00.000Z',
+      },
+      createdAt: '2026-07-24T02:00:00.000Z',
+      updatedAt: '2026-07-24T02:00:00.000Z',
+    };
+    listAdaptations.mockResolvedValue({
+      status: 200,
+      body: { data: { list: [scriptWritingAdaptation], total: 1, page: 1, limit: 20 } },
+    });
+    createAdaptationScreenplaySceneDraft.mockResolvedValue({
+      status: 202,
+      body: {
+        data: {
+          id: 'd31f0d12-c8f6-49ac-9ae3-cb2a7c99815a',
+          ownerId: '0e3a7e4b-9bb5-4c8e-a1a3-7b6b0861c5ad',
+          project: { id: 'af46e9a4-574a-4d55-bb21-1d89a5f3acd1' },
+          status: 'queued',
+          progress: 0,
+          currentStep: 'Queued for generation',
+          createdAt: '2026-07-26T02:00:00.000Z',
+          updatedAt: '2026-07-26T02:00:00.000Z',
+        },
+      },
+    });
+
+    render(<StudioWorkbench />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开作品' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看简报' }));
+    await screen.findByText('场景剧本');
+    fireEvent.change(screen.getByLabelText('AI 场景剧本要求'), {
+      target: { value: '强化冷峻氛围。' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'AI 生成本场' }));
+
+    await waitFor(() => {
+      expect(createAdaptationScreenplaySceneDraft).toHaveBeenCalledWith({
+        params: { adaptationId },
+        body: { episodeNumber: 1, sceneNumber: 1, prompt: '强化冷峻氛围。' },
       });
     });
   });

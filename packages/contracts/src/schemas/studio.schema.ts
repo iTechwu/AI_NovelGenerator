@@ -463,6 +463,15 @@ export const StudioAdaptationReviewAnnotationListResponseSchema = PaginatedRespo
   StudioAdaptationReviewAnnotationSchema,
 );
 
+// PRD P12/P13: per-scene AI screenplay generation. The author requests an AI
+// draft for one planned scene; the runtime returns Fountain text and NestJS
+// stores it as an immutable source='ai' screenplay scene revision.
+export const CreateStudioScreenplaySceneDraftSchema = z.object({
+  episodeNumber: z.coerce.number().int().min(1).max(100),
+  sceneNumber: z.coerce.number().int().min(1).max(200),
+  prompt: z.string().trim().max(2_000).optional().default(''),
+});
+
 export const StudioProjectImportResultSchema = z.object({
   importId: z.string().uuid(),
   project: StudioProjectSummarySchema,
@@ -485,6 +494,7 @@ export const StudioArtifactSchema = z.object({
   architecture: z.string().optional(),
   outline: z.string().optional(),
   chapterDraft: z.string().optional(),
+  screenplayScene: z.string().optional(),
   factChanges: z.array(StudioFactProposalSchema).optional(),
 });
 
@@ -1044,6 +1054,9 @@ export type StudioAdaptationReviewAnnotationListQuery = z.infer<
 >;
 export type StudioAdaptationReviewAnnotationListResponse = z.infer<
   typeof StudioAdaptationReviewAnnotationListResponseSchema
+>;
+export type CreateStudioScreenplaySceneDraft = z.infer<
+  typeof CreateStudioScreenplaySceneDraftSchema
 >;
 export type StudioFactProposal = z.infer<typeof StudioFactProposalSchema>;
 export type GenerationJob = z.infer<typeof GenerationJobSchema>;

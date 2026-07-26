@@ -40,6 +40,7 @@ import {
   UpsertStudioAdaptationReviewAnnotationSchema,
   StudioAdaptationReviewAnnotationListQuerySchema,
   StudioAdaptationReviewAnnotationListResponseSchema,
+  CreateStudioScreenplaySceneDraftSchema,
   SaveStudioStandaloneScreenplaySceneSchema,
   StudioStandaloneScreenplaySceneSchema,
   StudioStandaloneScreenplaySceneListQuerySchema,
@@ -349,6 +350,15 @@ export const studioContract = c.router(
       body: UpsertStudioAdaptationReviewAnnotationSchema,
       responses: { 200: ApiResponseSchema(StudioAdaptationReviewAnnotationSchema) },
       summary: 'Create or update the author verdict annotation for a scene',
+    },
+    createAdaptationScreenplaySceneDraft: {
+      method: 'POST',
+      path: '/adaptations/:adaptationId/screenplay-scene-drafts',
+      pathParams: z.object({ adaptationId: z.string().uuid() }),
+      body: CreateStudioScreenplaySceneDraftSchema,
+      responses: { 202: ApiResponseSchema(GenerationJobSchema) },
+      summary:
+        'Dispatch an AI per-scene screenplay draft; returns the generation job (an AI revision is created on success)',
     },
     listStandaloneScreenplayScenes: {
       method: 'GET',

@@ -149,6 +149,7 @@ def test_runtime_writes_completion_checkpoint_for_the_nest_run_id(
     assert json.loads(input_snapshot.read_text(encoding='utf-8')) == {
         'blueprint': None,
         'chapterPlan': None,
+        'screenplayScene': None,
         'kind': 'blueprint',
         'modelConfig': {
             'architectureModel': 'test-model',
@@ -376,6 +377,94 @@ def test_chapter_draft_job_preserves_confirmed_inputs_and_uses_draft_engine(
         }],
     }
     assert json.loads(snapshot.read_text(encoding='utf-8'))['chapterPlan']['title'] == '信件抵达'
+
+
+def test_screenplay_scene_draft_job_uses_adaptation_inputs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    api.jobs.clear()
+    monkeypatch.setattr(api.engine, '_settings', RuntimeSettings(
+        storage_root=tmp_path,
+        shared_secret='test-runtime-secret',
+        api_key='test-key',
+        base_url='https://example.test/v1',
+        model='test-model',
+        interface_format='OpenAI',
+        temperature=0.7,
+        max_tokens=100,
+        timeout_seconds=10,
+    ))
+    captured: dict[str, object] = {}
+
+    def fake_generate(project, scene_input, prompt, run_id, report):
+        captured['scenePlan'] = scene_input.scenePlan
+        captured['prompt'] = prompt
+        return {'screenplayScene': f'INT. {scene_input.scenePlan.title} - 夜\n\n{prompt}'}
+
+    monkeypatch.setattr(api.engine, 'generate_screenplay_scene_draft', fake_generate)
+    request = api.CreateJobRequest.model_validate({
+        **make_request().model_dump(mode='json'),
+        'kind': 'screenplay_scene_draft',
+        'screenplayScene': {
+            'brief': {
+                'targetFormat': 'series',
+                'targetAudience': '悬疑剧观众',
+                'adaptationGoal': '保留原作悬疑主线。',
+                'mustPreserve': '保留雾港秘密。',
+                'episodeCount': 12,
+                'minutesPerEpisode': 45,
+            },
+            'scenePlan': {
+                'episodeNumber': 1,
+                'sceneNumber': 1,
+                'title': '码头重逢',
+                'synopsis': '女主与旧识在码头相遇。',
+                'act': 'setup',
+            },
+            'decisions': [
+                {'type': 'cut', 'impact': 'high', 'proposal': '删去重复港口历史。', 'outcome': 'accepted'},
+            ],
+            'sourceExcerpt': '雨声先于信件抵达。',
+            'priorScreenplay': '',
+        },
+        'prompt': '强化冷峻氛围。',
+    })
+
+    async def create_and_finish() -> api.GenerationJob:
+        job = await api.create_generation_job(request, None)
+        await asyncio.sleep(0.05)
+        return api.jobs[job.id]
+
+    job = asyncio.run(create_and_finish())
+    snapshot = tmp_path / PROJECT_ID / 'inputs' / RUN_ID / 'request.json'
+
+    assert job.status == 'succeeded'
+    assert job.artifact == {'screenplayScene': 'INT. 码头重逢 - 夜\n\n强化冷峻氛围。'}
+    assert captured['prompt'] == '强化冷峻氛围。'
+    assert captured['scenePlan'].title == '码头重逢'
+    assert json.loads(snapshot.read_text(encoding='utf-8'))['screenplayScene']['scenePlan']['title'] == '码头重逢'
+
+
+def test_screenplay_scene_draft_requires_adaptation_inputs() -> None:
+    """The screenplay_scene_draft kind rejects requests that omit adaptation context."""
+    import pytest
+    with pytest.raises(ValueError):
+        api.CreateJobRequest.model_validate({
+            **make_request().model_dump(mode='json'),
+            'kind': 'screenplay_scene_draft',
+        })
+
+
+def test_screenplay_scene_starter_is_editable_fountain() -> None:
+    from runtime.api import ScreenplayBriefInput, ScreenplaySceneDraftInput, ScreenplayScenePlanInput
+    scene_input = ScreenplaySceneDraftInput(
+        brief=ScreenplayBriefInput(adaptationGoal='保留原作主线。'),
+        scenePlan=ScreenplayScenePlanInput(episodeNumber=1, sceneNumber=1, title='码头重逢', synopsis='女主回到雾港码头。'),
+    )
+    starter = GenerationEngine._starter_screenplay_scene(scene_input)
+    assert 'INT.' in starter
+    assert '码头重逢' in starter
 
 
 def test_fact_change_parser_keeps_only_complete_add_proposals() -> None:

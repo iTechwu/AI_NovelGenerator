@@ -53,6 +53,45 @@ const InternalCreateChapterDraftJobSchema = InternalCreateJobSchema.extend({
   prompt: z.string().max(2_000),
 });
 
+const InternalScreenplaySceneDraftJobSchema = InternalCreateJobSchema.extend({
+  kind: z.literal('screenplay_scene_draft'),
+  screenplayScene: z.object({
+    brief: z.object({
+      targetFormat: z.enum(['series', 'short_drama']),
+      targetAudience: z.string().max(500),
+      adaptationGoal: z.string().max(4_000),
+      mustPreserve: z.string().max(4_000),
+      episodeCount: z.number().int().min(1).max(100),
+      minutesPerEpisode: z.number().int().min(1).max(120),
+    }),
+    scenePlan: z.object({
+      episodeNumber: z.number().int().min(1).max(100),
+      sceneNumber: z.number().int().min(1).max(200),
+      title: z.string().max(200),
+      synopsis: z.string().max(4_000),
+      act: z.enum(['setup', 'development', 'twist', 'resolution']).nullable().optional(),
+    }),
+    decisions: z
+      .array(
+        z.object({
+          type: z.enum(['cut', 'merge', 'reorder', 'pov_change', 'expand']),
+          impact: z.enum(['low', 'medium', 'high']),
+          proposal: z.string().min(1).max(4_000),
+          outcome: z.enum(['accepted', 'edited', 'rejected']),
+        }),
+      )
+      .max(100),
+    sourceExcerpt: z.string().max(20_000),
+    priorScreenplay: z.string().max(20_000),
+  }),
+  prompt: z.string().max(2_000),
+});
+
+const InternalCreateFinalizeJobSchema = InternalCreateJobSchema.extend({
+  kind: z.literal('finalize_full'),
+  chapterPlan: StudioChapterPlanSchema,
+});
+
 const InternalFinalizationTaskSchema = z.object({
   taskId: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -250,6 +289,66 @@ export class NovelRuntimeClient {
       prompt: input.prompt,
     });
     return this.request('post', '/v1/generation-jobs', body, GenerationJobSchema);
+  }
+
+  /**
+   * Finalize a chapter produced by createChapterDraftFullJob: the Python runtime
+   * refreshes global_summary.txt + character_state.txt (LLM) and adds the chapter
+   * to the project vectorstore. Pass the same chapterPlan used for drafting.
+   */
+  async createFinalizeFullJob(
+    ownerId: string,
+    projectId: string,
+    jobId: string,
+    project: CreateStudioProject,
+    chapterPlan: z.infer<typeof StudioChapterPlanSchema>,
+  ): Promise<GenerationJob> {
+    const body = InternalCreateFinalizeJobSchema.parse({
+      ownerId,
+      jobId,
+      project: { ...project, id: projectId },
+      kind: 'finalize_full',
+      chapterPlan,
+    });
+    return this.request(
+      'post',
+      '/v1/generation-jobs',
+      body,
+      GenerationJobSchema,
+      undefined,
+      this.llmTimeoutMs,
+    );
+  }
+
+  /**
+   * Dispatch a per-scene AI screenplay draft. The adaptation context (brief,
+   * planned scene, resolved decisions, immutable source excerpt, prior scene)
+   * is sent verbatim; the runtime returns Fountain text as artifact.screenplayScene.
+   */
+  async createScreenplaySceneDraftJob(
+    ownerId: string,
+    projectId: string,
+    jobId: string,
+    project: CreateStudioProject,
+    screenplayScene: z.infer<typeof InternalScreenplaySceneDraftJobSchema>['screenplayScene'],
+    prompt: string,
+  ): Promise<GenerationJob> {
+    const body = InternalScreenplaySceneDraftJobSchema.parse({
+      ownerId,
+      jobId,
+      project: { ...project, id: projectId },
+      kind: 'screenplay_scene_draft',
+      screenplayScene,
+      prompt,
+    });
+    return this.request(
+      'post',
+      '/v1/generation-jobs',
+      body,
+      GenerationJobSchema,
+      undefined,
+      this.llmTimeoutMs,
+    );
   }
 
   private async request<T>(
